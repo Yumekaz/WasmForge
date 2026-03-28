@@ -61,10 +61,10 @@ function ResultTable({ resultSet, sortConfig, onSort }) {
   return (
     <div
       style={{
-        border: '1px solid #30363d',
-        borderRadius: '12px',
+        border: '1px solid #2a323b',
+        borderRadius: '10px',
         overflow: 'hidden',
-        background: '#0d1117',
+        background: '#0d141c',
       }}
     >
       <div
@@ -75,7 +75,7 @@ function ResultTable({ resultSet, sortConfig, onSort }) {
           gap: '12px',
           padding: '12px 14px',
           borderBottom: '1px solid #21262d',
-          background: 'linear-gradient(180deg, #161b22 0%, #11161d 100%)',
+          background: '#101720',
         }}
       >
         <div>
@@ -91,10 +91,10 @@ function ResultTable({ resultSet, sortConfig, onSort }) {
         </div>
         <span
           style={{
-            color: resultSet.kind === 'summary' ? '#d29922' : '#58a6ff',
-            background: resultSet.kind === 'summary' ? '#362708' : '#0d2538',
-            border: `1px solid ${resultSet.kind === 'summary' ? '#6b4f18' : '#1f6feb'}`,
-            borderRadius: '999px',
+            color: resultSet.kind === 'summary' ? '#c8a35a' : '#9db9da',
+            background: resultSet.kind === 'summary' ? 'rgba(79, 63, 31, 0.4)' : 'rgba(40, 57, 79, 0.42)',
+            border: `1px solid ${resultSet.kind === 'summary' ? 'rgba(138, 110, 63, 0.34)' : 'rgba(109, 133, 163, 0.34)'}`,
+            borderRadius: '8px',
             padding: '3px 8px',
             fontSize: '11px',
             fontWeight: 700,
@@ -128,7 +128,7 @@ function ResultTable({ resultSet, sortConfig, onSort }) {
                     style={{
                       position: 'sticky',
                       top: 0,
-                      background: '#0f1722',
+                      background: '#101720',
                       color: isActive ? '#f0f6fc' : '#8b949e',
                       textAlign: 'left',
                       padding: '10px 12px',
@@ -139,7 +139,7 @@ function ResultTable({ resultSet, sortConfig, onSort }) {
                     }}
                   >
                     <span>{column}</span>
-                    <span style={{ marginLeft: '8px', color: isActive ? '#58a6ff' : '#6e7681' }}>
+                    <span style={{ marginLeft: '8px', color: isActive ? '#9db9da' : '#6e7681' }}>
                       {direction}
                     </span>
                   </th>
@@ -153,7 +153,7 @@ function ResultTable({ resultSet, sortConfig, onSort }) {
               <tr
                 key={`${resultSet.id}-row-${rowIndex}`}
                 style={{
-                  background: rowIndex % 2 === 0 ? '#0d1117' : '#11161d',
+                  background: rowIndex % 2 === 0 ? '#0d141c' : '#101821',
                 }}
               >
                 {resultSet.columns.map((_, columnIndex) => (
@@ -237,19 +237,17 @@ export default function SqlResultsPanel({
       style={{
         height: '100%',
         overflowY: 'auto',
-        background:
-          'radial-gradient(circle at top left, rgba(31, 111, 235, 0.18), transparent 28%), #0d1117',
-        padding: '18px',
+        background: '#0d141c',
+        padding: '16px',
         color: '#c9d1d9',
       }}
     >
       <div
         style={{
-          border: '1px solid #30363d',
-          borderRadius: '16px',
+          border: '1px solid #2a323b',
+          borderRadius: '14px',
           padding: '16px',
-          background: 'linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98))',
-          boxShadow: '0 18px 48px rgba(1, 4, 9, 0.35)',
+          background: '#0f161f',
           marginBottom: '16px',
         }}
       >
@@ -273,10 +271,10 @@ export default function SqlResultsPanel({
 
           <span
             style={{
-              color: engine === 'sqlite' ? '#58a6ff' : '#56d364',
-              background: engine === 'sqlite' ? '#0d2538' : '#0f2e1f',
-              border: `1px solid ${engine === 'sqlite' ? '#1f6feb' : '#238636'}`,
-              borderRadius: '999px',
+              color: engine === 'sqlite' ? '#9db9da' : '#9ec7a2',
+              background: engine === 'sqlite' ? 'rgba(40, 57, 79, 0.42)' : 'rgba(38, 59, 43, 0.44)',
+              border: `1px solid ${engine === 'sqlite' ? 'rgba(109, 133, 163, 0.34)' : 'rgba(90, 125, 97, 0.34)'}`,
+              borderRadius: '10px',
               padding: '4px 10px',
               fontSize: '11px',
               fontWeight: 800,
@@ -296,17 +294,17 @@ export default function SqlResultsPanel({
             marginTop: '16px',
           }}
         >
-          <InfoTile label="Engine" value={engineLabel} tone={engine === 'sqlite' ? '#58a6ff' : '#56d364'} />
-          <InfoTile label="File" value={activeFile || 'No SQL file selected'} tone="#d29922" />
+          <InfoTile label="Engine" value={engineLabel} tone={engine === 'sqlite' ? '#9db9da' : '#9ec7a2'} />
+          <InfoTile label="File" value={activeFile || 'No SQL file selected'} tone="#c8a35a" />
           <InfoTile
             label="Persistence"
             value="Browser storage (OPFS)"
-            tone="#f0883e"
+            tone="#cfa07a"
           />
           <InfoTile
             label="Database"
             value={result?.databaseLabel || 'Created on first run'}
-            tone="#bc8cff"
+            tone="#aab2c4"
           />
         </div>
       </div>
@@ -316,15 +314,15 @@ export default function SqlResultsPanel({
       ) : null}
 
       {!isReady ? (
-        <StateCard title="Preparing engine" body={status} tone="#58a6ff" />
+        <StateCard title="Preparing engine" body={status} tone="#9db9da" />
       ) : null}
 
       {isRunning ? (
-        <StateCard title="Running query" body={`${engineLabel} is executing your SQL.`} tone="#f0883e" />
+        <StateCard title="Running query" body={`${engineLabel} is executing your SQL.`} tone="#cfa07a" />
       ) : null}
 
       {result?.recoveryMessage ? (
-        <StateCard title="Database recovered" body={result.recoveryMessage} tone="#d29922" />
+        <StateCard title="Database recovered" body={result.recoveryMessage} tone="#c8a35a" />
       ) : null}
 
       {result?.error ? (
@@ -378,9 +376,9 @@ function InfoTile({ label, value, tone }) {
     <div
       style={{
         border: '1px solid #21262d',
-        borderRadius: '12px',
+        borderRadius: '10px',
         padding: '12px',
-        background: '#11161d',
+        background: '#0c1219',
       }}
     >
       <div
@@ -406,11 +404,11 @@ function StateCard({ title, body, tone }) {
   return (
     <div
       style={{
-        border: `1px solid ${tone}44`,
-        borderLeft: `4px solid ${tone}`,
-        borderRadius: '12px',
+        border: `1px solid ${tone}30`,
+        borderLeft: `3px solid ${tone}`,
+        borderRadius: '10px',
         padding: '14px 16px',
-        background: '#11161d',
+        background: '#0f161f',
         marginBottom: '14px',
       }}
     >

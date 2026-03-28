@@ -181,8 +181,8 @@ function FileTree({
       style={{
         width: '100%',
         height: '100%',
-        background: 'linear-gradient(180deg, #161b22 0%, #12161d 100%)',
-        borderRight: '1px solid #30363d',
+        background: '#0d141c',
+        borderRight: '1px solid #2a323b',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -196,7 +196,7 @@ function FileTree({
           alignItems: 'center',
           justifyContent: 'space-between',
           gap: '10px',
-          background: 'linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(18, 22, 29, 0.98))',
+          background: '#101720',
         }}
       >
         <div>
@@ -206,7 +206,7 @@ function FileTree({
               fontWeight: 700,
               color: '#8b949e',
               textTransform: 'uppercase',
-              letterSpacing: '0.1em',
+              letterSpacing: '0.08em',
             }}
           >
             Files
@@ -234,7 +234,7 @@ function FileTree({
         {isCreating ? (
           <InlineRow
             isActive
-            tone="#58a6ff"
+            tone="#9db9da"
             leftSlot={<FileGlyph filename={createName || 'new.file'} />}
           >
             <input
@@ -386,18 +386,17 @@ function FileItem({
         fontSize: '13px',
         color: disabled ? '#6e7681' : isActive ? '#f0f6fc' : '#c9d1d9',
         background: isActive
-          ? 'linear-gradient(90deg, rgba(31, 111, 235, 0.22), rgba(31, 111, 235, 0.08))'
+          ? 'rgba(95, 112, 140, 0.14)'
           : 'transparent',
-        border: `1px solid ${isActive ? 'rgba(88, 166, 255, 0.35)' : 'transparent'}`,
+        border: `1px solid ${isActive ? 'rgba(118, 132, 153, 0.24)' : 'transparent'}`,
         borderRadius: '12px',
-        boxShadow: isActive ? 'inset 0 0 0 1px rgba(88, 166, 255, 0.12)' : 'none',
-        transition: 'background 0.12s ease, border-color 0.12s ease, transform 0.12s ease',
+        transition: 'background 0.12s ease, border-color 0.12s ease',
         opacity: disabled ? 0.72 : 1,
       }}
       onMouseEnter={(event) => {
         if (!isActive && !disabled) {
-          event.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)'
-          event.currentTarget.style.borderColor = 'rgba(139, 148, 158, 0.14)'
+          event.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)'
+          event.currentTarget.style.borderColor = 'rgba(139, 148, 158, 0.1)'
         }
       }}
       onMouseLeave={(event) => {
@@ -430,21 +429,6 @@ function FileItem({
           />
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
-            <span
-              style={{
-                fontSize: '12px',
-                fontWeight: 700,
-                color: meta.color,
-                background: meta.badgeBackground,
-                border: `1px solid ${meta.badgeBorder}`,
-                borderRadius: '999px',
-                padding: '2px 8px',
-                letterSpacing: '0.04em',
-                flexShrink: 0,
-              }}
-            >
-              {meta.badge}
-            </span>
             <div
               style={{
                 flex: 1,
@@ -500,9 +484,8 @@ function FileGlyph({ filename }) {
         position: 'relative',
         flexShrink: 0,
         borderRadius: '8px',
-        background: `linear-gradient(180deg, ${meta.surface}, ${meta.surfaceDark})`,
+        background: '#11161d',
         border: `1px solid ${meta.border}`,
-        boxShadow: 'inset 0 1px 0 rgba(255, 255, 255, 0.06)',
         display: 'grid',
         placeItems: 'center',
         color: meta.color,
@@ -512,18 +495,6 @@ function FileGlyph({ filename }) {
       }}
     >
       <span style={{ position: 'relative', zIndex: 1 }}>{meta.glyph}</span>
-      <span
-        style={{
-          position: 'absolute',
-          top: 0,
-          right: 0,
-          width: 0,
-          height: 0,
-          borderTop: '8px solid rgba(255,255,255,0.14)',
-          borderLeft: '8px solid transparent',
-          borderTopRightRadius: '7px',
-        }}
-      />
     </div>
   )
 }
@@ -539,9 +510,9 @@ function ActionButton({ label, shortcut, onClick, disabled = false, danger = fal
         height: '24px',
         minWidth: '24px',
         padding: '0 8px',
-        borderRadius: '999px',
+        borderRadius: '8px',
         border: `1px solid ${danger ? 'rgba(248, 81, 73, 0.35)' : 'rgba(139, 148, 158, 0.2)'}`,
-        background: danger ? 'rgba(248, 81, 73, 0.08)' : 'rgba(255, 255, 255, 0.02)',
+        background: danger ? 'rgba(248, 81, 73, 0.06)' : '#11161d',
         color: disabled ? '#6e7681' : danger ? '#ff7b72' : '#c9d1d9',
         cursor: disabled ? 'not-allowed' : 'pointer',
         fontSize: '11px',
@@ -595,7 +566,7 @@ function MenuItem({ label, hint, onClick, danger = false, disabled = false }) {
   )
 }
 
-function InlineRow({ children, leftSlot, tone = '#58a6ff', isActive = false }) {
+function InlineRow({ children, leftSlot, tone = '#9db9da', isActive = false }) {
   return (
     <div
       style={{
@@ -605,9 +576,8 @@ function InlineRow({ children, leftSlot, tone = '#58a6ff', isActive = false }) {
         alignItems: 'center',
         gap: '10px',
         borderRadius: '12px',
-        border: `1px solid ${isActive ? tone : 'rgba(88, 166, 255, 0.18)'}`,
-        background: 'rgba(88, 166, 255, 0.07)',
-        boxShadow: 'inset 0 0 0 1px rgba(88, 166, 255, 0.06)',
+        border: `1px solid ${isActive ? tone : 'rgba(95, 112, 140, 0.2)'}`,
+        background: 'rgba(95, 112, 140, 0.08)',
       }}
     >
       {leftSlot}
@@ -622,7 +592,7 @@ function iconButtonStyle(disabled = false) {
     height: '28px',
     borderRadius: '8px',
     border: '1px solid rgba(139, 148, 158, 0.18)',
-    background: 'rgba(255, 255, 255, 0.03)',
+    background: '#11161d',
     color: disabled ? '#6e7681' : '#c9d1d9',
     cursor: disabled ? 'not-allowed' : 'pointer',
     fontSize: '18px',
@@ -634,9 +604,9 @@ function iconButtonStyle(disabled = false) {
 
 const inlineInputStyle = {
   width: '100%',
-  border: '1px solid rgba(88, 166, 255, 0.35)',
+  border: '1px solid rgba(95, 112, 140, 0.26)',
   borderRadius: '8px',
-  background: '#0d1117',
+  background: '#0b1118',
   color: '#f0f6fc',
   fontSize: '13px',
   padding: '7px 9px',
@@ -665,10 +635,10 @@ function getFileMeta(filename) {
       return {
         badge: 'PY',
         glyph: 'Py',
-        color: '#58a6ff',
+        color: '#9db9da',
         surface: '#0d2538',
         surfaceDark: '#091a29',
-        border: '#1f6feb',
+        border: '#536986',
         badgeBackground: 'rgba(88, 166, 255, 0.12)',
         badgeBorder: 'rgba(88, 166, 255, 0.35)',
         glyphFontSize: '11px',
@@ -677,10 +647,10 @@ function getFileMeta(filename) {
       return {
         badge: 'SQL',
         glyph: 'DB',
-        color: '#56d364',
+        color: '#9ec7a2',
         surface: '#0f2e1f',
         surfaceDark: '#0b2318',
-        border: '#238636',
+        border: '#527258',
         badgeBackground: 'rgba(86, 211, 100, 0.12)',
         badgeBorder: 'rgba(86, 211, 100, 0.35)',
         glyphFontSize: '10px',
@@ -689,10 +659,10 @@ function getFileMeta(filename) {
       return {
         badge: 'JS',
         glyph: 'JS',
-        color: '#d29922',
+        color: '#d0ba83',
         surface: '#362708',
         surfaceDark: '#291d06',
-        border: '#6b4f18',
+        border: '#7a6540',
         badgeBackground: 'rgba(210, 153, 34, 0.12)',
         badgeBorder: 'rgba(210, 153, 34, 0.35)',
         glyphFontSize: '10px',
@@ -701,10 +671,10 @@ function getFileMeta(filename) {
       return {
         badge: 'TS',
         glyph: 'TS',
-        color: '#bc8cff',
+        color: '#aebdd8',
         surface: '#27143f',
         surfaceDark: '#1d1031',
-        border: '#6e40c9',
+        border: '#5f6f87',
         badgeBackground: 'rgba(188, 140, 255, 0.12)',
         badgeBorder: 'rgba(188, 140, 255, 0.35)',
         glyphFontSize: '10px',
@@ -713,10 +683,10 @@ function getFileMeta(filename) {
       return {
         badge: 'PG',
         glyph: 'PG',
-        color: '#f0883e',
+        color: '#cfa07a',
         surface: '#3a1e08',
         surfaceDark: '#281406',
-        border: '#9e6a03',
+        border: '#8e6a4f',
         badgeBackground: 'rgba(240, 136, 62, 0.12)',
         badgeBorder: 'rgba(240, 136, 62, 0.35)',
         glyphFontSize: '10px',
@@ -748,10 +718,10 @@ function getContextMenuStyle(contextMenu) {
     top: `${top}px`,
     minWidth: '180px',
     padding: '6px',
-    border: '1px solid #30363d',
-    borderRadius: '12px',
-    background: 'linear-gradient(180deg, #161b22 0%, #0f141b 100%)',
-    boxShadow: '0 18px 40px rgba(1, 4, 9, 0.45)',
+    border: '1px solid #2a323b',
+    borderRadius: '10px',
+    background: '#0f161f',
+    boxShadow: '0 14px 30px rgba(1, 4, 9, 0.28)',
     zIndex: 50,
   }
 }

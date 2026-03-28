@@ -39,23 +39,23 @@ function Pill({ children, tone = 'default' }) {
   const tones = {
     default: {
       color: '#c9d1d9',
-      background: '#11161d',
-      border: '#30363d',
+      background: '#101720',
+      border: '#2a323b',
     },
     accent: {
-      color: '#58a6ff',
-      background: '#0d2538',
-      border: '#1f6feb',
+      color: '#9db9da',
+      background: 'rgba(40, 57, 79, 0.42)',
+      border: 'rgba(109, 133, 163, 0.34)',
     },
     warm: {
-      color: '#d29922',
-      background: '#362708',
-      border: '#6b4f18',
+      color: '#c8a35a',
+      background: 'rgba(79, 63, 31, 0.4)',
+      border: 'rgba(138, 110, 63, 0.34)',
     },
     green: {
-      color: '#56d364',
-      background: '#0f2e1f',
-      border: '#238636',
+      color: '#9ec7a2',
+      background: 'rgba(38, 59, 43, 0.44)',
+      border: 'rgba(90, 125, 97, 0.34)',
     },
   }
 
@@ -68,7 +68,7 @@ function Pill({ children, tone = 'default' }) {
         alignItems: 'center',
         gap: '4px',
         padding: '2px 8px',
-        borderRadius: '999px',
+        borderRadius: '8px',
         color: style.color,
         background: style.background,
         border: `1px solid ${style.border}`,
@@ -108,18 +108,18 @@ function TreeRow({
           marginLeft: `${indent * 16}px`,
           border: '1px solid transparent',
           borderRadius: '10px',
-          background: open ? 'rgba(88, 166, 255, 0.08)' : 'transparent',
+          background: open ? 'rgba(95, 112, 140, 0.12)' : 'transparent',
           color: '#c9d1d9',
           cursor: 'pointer',
           textAlign: 'left',
-          transition: 'background 160ms ease, border-color 160ms ease, transform 160ms ease',
+          transition: 'background 160ms ease, border-color 160ms ease',
         }}
         onMouseEnter={(event) => {
-          event.currentTarget.style.background = open ? 'rgba(88, 166, 255, 0.12)' : 'rgba(17, 22, 29, 0.9)'
+          event.currentTarget.style.background = open ? 'rgba(95, 112, 140, 0.16)' : 'rgba(17, 22, 29, 0.9)'
           event.currentTarget.style.borderColor = '#21262d'
         }}
         onMouseLeave={(event) => {
-          event.currentTarget.style.background = open ? 'rgba(88, 166, 255, 0.08)' : 'transparent'
+          event.currentTarget.style.background = open ? 'rgba(95, 112, 140, 0.12)' : 'transparent'
           event.currentTarget.style.borderColor = 'transparent'
         }}
       >
@@ -131,22 +131,15 @@ function TreeRow({
             display: 'inline-grid',
             placeItems: 'center',
             borderRadius: '8px',
-            background:
-              tone === 'accent'
-                ? 'rgba(88, 166, 255, 0.12)'
-                : tone === 'warm'
-                  ? 'rgba(210, 153, 34, 0.12)'
-                  : tone === 'green'
-                    ? 'rgba(86, 211, 100, 0.12)'
-                    : '#11161d',
-            border: '1px solid #30363d',
+            background: '#11161d',
+            border: '1px solid #2a323b',
             color:
               tone === 'accent'
-                ? '#58a6ff'
+                ? '#9db9da'
                 : tone === 'warm'
-                  ? '#d29922'
+                  ? '#c8a35a'
                   : tone === 'green'
-                    ? '#56d364'
+                    ? '#9ec7a2'
                     : '#8b949e',
             fontSize: '12px',
             fontWeight: 800,
@@ -261,10 +254,9 @@ export default function SchemaInspector({ schema }) {
     return (
       <div
         style={{
-          border: '1px solid #30363d',
-          borderRadius: '16px',
-          background: 'linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98))',
-          boxShadow: '0 18px 48px rgba(1, 4, 9, 0.28)',
+          border: '1px solid #2a323b',
+          borderRadius: '14px',
+          background: '#0f161f',
           marginBottom: '16px',
           overflow: 'hidden',
         }}
@@ -297,11 +289,9 @@ export default function SchemaInspector({ schema }) {
   return (
     <div
       style={{
-        border: '1px solid #30363d',
-        borderRadius: '16px',
-        background:
-          'radial-gradient(circle at top right, rgba(88, 166, 255, 0.12), transparent 30%), linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98))',
-        boxShadow: '0 18px 48px rgba(1, 4, 9, 0.28)',
+        border: '1px solid #2a323b',
+        borderRadius: '14px',
+        background: '#0f161f',
         marginBottom: '16px',
         overflow: 'hidden',
       }}
