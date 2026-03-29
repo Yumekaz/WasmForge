@@ -63,26 +63,35 @@ WasmForge is intentionally split into isolated browser workers so user code neve
 
 Browsers are single-threaded by default. Running a Python interpreter on the main thread would freeze the UI permanently on any blocking operation. WasmForge solves this with strict thread isolation — every runtime runs in a dedicated Web Worker, completely separated from the UI:
 
-```
-Main Thread (React UI — Monaco Editor, File Tree, Xterm.js)
-        │
-        │  postMessage (non-blocking)
-        ▼
-Execution Router — reads file extension, dispatches to correct Worker
-        │
-        ├── Python Worker  (Pyodide — CPython → Wasm)
-        ├── JS/TS Worker   (Sucrase transpiler + sandboxed eval)
-        ├── SQLite Worker  (sql.js — SQLite → Wasm)
-        └── PGLite Worker  (PostgreSQL → Wasm)
-        │
-        │  stdout/stderr buffered chunks → Xterm.js terminal
-        ▼
-I/O Worker — OPFS Synchronous Write API
-        — persists every editor change to local disk
-        ▼
-ServiceWorker Cache
-        — serves Pyodide binary, stdlib, numpy/pandas from disk
-        — zero network calls on every load after first
+```mermaid
+flowchart TD
+    UI["Main Thread<br/>React UI — Monaco Editor, File Tree, Xterm.js"]
+    Router["Execution Router<br/>reads file extension, dispatches to correct Worker"]
+    PY["Python Worker<br/>Pyodide — CPython -> Wasm"]
+    JS["JS/TS Worker<br/>Sucrase transpiler + sandboxed eval"]
+    SQLITE["SQLite Worker<br/>sql.js — SQLite -> Wasm"]
+    PG["PGLite Worker<br/>PostgreSQL -> Wasm"]
+    TERM["Xterm.js Terminal<br/>stdout/stderr buffered chunks"]
+    IO["I/O Worker<br/>OPFS Synchronous Write API<br/>persists every editor change to local disk"]
+    SW["ServiceWorker Cache<br/>serves Pyodide binary, stdlib, numpy, pandas from disk<br/>zero network calls on every load after first"]
+
+    UI -->|postMessage (non-blocking)| Router
+    Router --> PY
+    Router --> JS
+    Router --> SQLITE
+    Router --> PG
+
+    PY --> TERM
+    JS --> TERM
+    SQLITE --> TERM
+    PG --> TERM
+
+    PY --> IO
+    JS --> IO
+    SQLITE --> IO
+    PG --> IO
+
+    IO --> SW
 ```
 
 The main thread never executes user code. A crash or infinite loop in any Worker cannot freeze the UI.
