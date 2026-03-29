@@ -29,6 +29,34 @@ The architecture is not an optimization of the cloud model. It is a replacement 
 
 ---
 
+## System Diagram
+
+```mermaid
+flowchart TD
+    UI["React UI<br/>Monaco Editor • File Tree • Xterm.js"] --> Router["Execution Router<br/>File extension -> runtime"]
+    UI --> IO["I/O Worker<br/>OPFS read/write"]
+    UI --> SW["Service Worker Cache<br/>offline assets after first load"]
+
+    Router --> PY["Python Worker<br/>Pyodide / CPython -> Wasm"]
+    Router --> JS["JS/TS Worker<br/>Sucrase + sandboxed execution"]
+    Router --> SQ["SQLite Worker<br/>sql.js -> Wasm"]
+    Router --> PG["PostgreSQL Worker<br/>PGLite -> Wasm"]
+
+    PY --> TERM["Terminal / Results UI"]
+    JS --> TERM
+    SQ --> TERM
+    PG --> TERM
+
+    IO --> OPFS["Origin Private File System<br/>persistent local files + DB state"]
+    SQ --> OPFS
+    PG --> OPFS
+    SW --> CACHE["Cached Pyodide runtime,<br/>stdlib, wheels, and app assets"]
+```
+
+WasmForge is intentionally split into isolated browser workers so user code never runs on the main UI thread, while OPFS and the Service Worker provide persistence and offline execution.
+
+---
+
 ## How It Works
 
 ### Thread Isolation
@@ -145,6 +173,27 @@ window.crossOriginIsolated // must return true
 | Web Workers | Isolated execution for Python, JS/TS, SQLite, PostgreSQL, and file I/O |
 | OPFS | Persistent local storage for files and SQL state |
 | SharedArrayBuffer + Atomics | Blocking `input()` support without freezing the UI |
+
+---
+
+## Scalability & Reliability
+
+### Scalability
+
+- Compute scales with the user's machine, not with a shared backend server, so there is no per-user execution bottleneck for Python, JS, SQLite, or PostgreSQL workloads.
+- Deployment stays simple because the hosted surface is mostly static assets plus cache headers. Scaling distribution is a CDN problem, not a runtime orchestration problem.
+- The architecture is modular: each runtime lives in its own Worker, so adding a new language or execution engine is an extension of the routing layer rather than a rewrite of the app.
+- Workspace-scoped OPFS storage keeps files and database state isolated, which makes the model easier to extend toward larger projects, multiple workspaces, or optional future sync.
+
+### Reliability
+
+- The UI stays responsive because user code never runs on the main thread.
+- Python infinite loops are contained by a heartbeat watchdog that terminates and respawns the Worker instead of freezing the page.
+- Files persist through reloads and browser restarts via OPFS, and SQL state is restored from browser storage on the next run.
+- After the first load, the Service Worker serves the runtime binaries and wheels locally, so the app continues to function offline and is less sensitive to network instability.
+- Interactive `input()` is implemented with `SharedArrayBuffer` and `Atomics`, which allows synchronous terminal input without blocking the interface.
+
+This does not remove every limitation of browser execution, but it gives WasmForge a resilient prototype architecture: isolated failures, persistent state, offline reuse, and no backend outage dependency.
 
 ---
 
