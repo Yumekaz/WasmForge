@@ -30,6 +30,11 @@ const TOP_HEADER_HEIGHT = 60;
 const STATUS_BAR_HEIGHT = 22;
 const BOTTOM_TABBAR_HEIGHT = 35;
 const EDITOR_SPLIT_HANDLE_HEIGHT = 6;
+const MOBILE_TOPBAR_HEIGHT = 56;
+const MOBILE_TABBAR_HEIGHT = 40;
+const MOBILE_NAV_HEIGHT = 72;
+const MOBILE_STATUS_HEIGHT = 22;
+const MOBILE_DOCKED_PANEL_HEIGHT = 220;
 const MIN_EDITOR_PANEL_HEIGHT = 220;
 const MIN_TERMINAL_PANEL_HEIGHT = 160;
 const DEFAULT_EDITOR_RATIO = 0.65;
@@ -1406,7 +1411,7 @@ export default function App() {
     if (bottomPanelMode !== "terminal") {
       return;
     }
-    if (isMobileLayout && mobilePane !== "output") {
+    if (isMobileLayout && mobilePane === "files") {
       return;
     }
     requestTerminalResize();
@@ -1448,14 +1453,22 @@ export default function App() {
   }, [fileSearchQuery, sidebarMode]);
 
   const fileTabs = openFiles.filter((filename) => files.some((file) => file.name === filename));
-  const terminalVisible = bottomPanelMode === "terminal" && (!isMobileLayout || mobilePane === "output");
-  const outputVisible = bottomPanelMode === "output" && (!isMobileLayout || mobilePane === "output");
+  const mobileDockedConsoleVisible = isMobileLayout && mobilePane === "editor";
+  const terminalVisible = bottomPanelMode === "terminal" && (!isMobileLayout || mobilePane === "output" || mobileDockedConsoleVisible);
+  const outputVisible = bottomPanelMode === "output" && (!isMobileLayout || mobilePane === "output" || mobileDockedConsoleVisible);
   const editorPaneStyle =
     isMobileLayout || editorPaneHeight === null
       ? { flex: `${DEFAULT_EDITOR_RATIO} 1 0%` }
       : { flex: `0 0 ${editorPaneHeight}px` };
   const runButtonDisabled = isAnyRuntimeBusy || activeRuntime === "unknown" || !activeRuntimeReady;
   const desktopNavWidth = ACTIVITY_BAR_WIDTH + sidebarWidth;
+  const mobileNavMode =
+    mobilePane === "files"
+      ? (sidebarMode === "search" ? "search" : "explorer")
+      : mobilePane === "output"
+        ? "console"
+        : "editor";
+  const mobileHeaderTitle = activeFile || "No file selected";
 
   const filesPanel = (
     <FileTree
@@ -1611,68 +1624,64 @@ export default function App() {
         flexDirection: "column",
       }}
     >
-      <div
-        style={{
-          height: `${TOP_HEADER_HEIGHT}px`,
-          minHeight: `${TOP_HEADER_HEIGHT}px`,
-          display: "flex",
-          flexDirection: "column",
-          background: "#1a1c21",
-          borderBottom: "1px solid #111317",
-        }}
-      >
+      {!isMobileLayout ? (
         <div
           style={{
+            height: `${TOP_HEADER_HEIGHT}px`,
+            minHeight: `${TOP_HEADER_HEIGHT}px`,
             display: "flex",
-            alignItems: "center",
-            gap: "12px",
-            height: "28px",
-            minHeight: "28px",
-            padding: "0 12px",
-            borderBottom: "1px solid rgba(255,255,255,0.04)",
-            background: "#1b1d22",
+            flexDirection: "column",
+            background: "#1a1c21",
+            borderBottom: "1px solid #111317",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flexShrink: 0 }}>
-            <LogoMark />
-            <div style={{ color: "#ffffff", fontSize: "13px", fontWeight: 600, whiteSpace: "nowrap" }}>WasmForge</div>
-            {!isMobileLayout ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              height: "28px",
+              minHeight: "28px",
+              padding: "0 12px",
+              borderBottom: "1px solid rgba(255,255,255,0.04)",
+              background: "#1b1d22",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flexShrink: 0 }}>
+              <LogoMark />
+              <div style={{ color: "#ffffff", fontSize: "13px", fontWeight: 600, whiteSpace: "nowrap" }}>WasmForge</div>
               <div style={{ color: "#6e7681", fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.12em" }}>
                 Local IDE
               </div>
-            ) : null}
-          </div>
+            </div>
 
-          <div style={{ flex: 1, minWidth: 0, display: "flex", justifyContent: "center", padding: "0 8px" }}>
-            <ToolbarSearch
-              value={fileSearchQuery}
-              onChange={(value) => {
-                setSidebarMode("search");
-                setFileSearchQuery(value);
-              }}
-              onFocus={() => setSidebarMode("search")}
-            />
-          </div>
+            <div style={{ flex: 1, minWidth: 0, display: "flex", justifyContent: "center", padding: "0 8px" }}>
+              <ToolbarSearch
+                value={fileSearchQuery}
+                onChange={(value) => {
+                  setSidebarMode("search");
+                  setFileSearchQuery(value);
+                }}
+                onFocus={() => setSidebarMode("search")}
+              />
+            </div>
 
-          {!isMobileLayout ? (
             <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#666d76", fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", flexShrink: 0 }}>
               <span>Project</span>
               <span style={{ color: "#1997ff", fontWeight: 700, letterSpacing: "0.04em", textTransform: "none", fontSize: "11px", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                 {activeWorkspace}
               </span>
             </div>
-          ) : null}
-        </div>
+          </div>
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "stretch",
-            minHeight: "31px",
-            background: "#1a1c21",
-          }}
-        >
-          {!isMobileLayout ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "stretch",
+              minHeight: "31px",
+              background: "#1a1c21",
+            }}
+          >
             <div
               style={{
                 width: `${desktopNavWidth}px`,
@@ -1681,25 +1690,133 @@ export default function App() {
                 background: "#1a1c21",
               }}
             />
-          ) : null}
+
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                display: "flex",
+                alignItems: "stretch",
+                overflowX: "auto",
+                scrollbarWidth: "thin",
+              }}
+            >
+              {fileTabs.length === 0 ? (
+                <div style={{ padding: "0 12px", color: "#737b86", fontSize: "12px", display: "flex", alignItems: "center" }}>
+                  No file selected
+                </div>
+              ) : (
+                fileTabs.map((filename) => (
+                  <HeaderTab
+                    key={filename}
+                    active={filename === activeFile}
+                    filename={filename}
+                    onSelect={() => {
+                      void handleFileSelect(filename);
+                    }}
+                    onClose={() => handleCloseTab(filename)}
+                  />
+                ))
+              )}
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                padding: "0 12px",
+                flexShrink: 0,
+                borderLeft: "1px solid rgba(255,255,255,0.04)",
+                background: "#1a1c21",
+              }}
+            >
+              <button type="button" onClick={handleRun} disabled={runButtonDisabled} style={runButtonStyle(runButtonDisabled)}>
+                ▶ Run
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isMobileLayout ? (
+        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: "#111317" }}>
+          <div
+            style={{
+              height: `${MOBILE_TOPBAR_HEIGHT}px`,
+              minHeight: `${MOBILE_TOPBAR_HEIGHT}px`,
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              padding: "0 14px",
+              background: "#14181f",
+              borderBottom: "1px solid rgba(255,255,255,0.04)",
+              flexShrink: 0,
+            }}
+          >
+            <button
+              type="button"
+              aria-label={mobilePane === "files" && sidebarMode === "explorer" ? "Back to editor" : "Open explorer"}
+              onClick={() => {
+                if (mobilePane === "files" && sidebarMode === "explorer") {
+                  setMobilePane("editor");
+                  return;
+                }
+                setSidebarMode("explorer");
+                setMobilePane("files");
+              }}
+              style={mobileTopButtonStyle(mobilePane === "files" && sidebarMode === "explorer")}
+            >
+              <MenuIcon />
+            </button>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "9px", minWidth: 0 }}>
+                <LogoMark />
+                <div style={{ color: "#7ee0da", fontSize: "14px", fontWeight: 700, letterSpacing: "0.01em" }}>
+                  WasmForge
+                </div>
+              </div>
+              <div
+                style={{
+                  marginTop: "4px",
+                  color: "#b8bec6",
+                  fontSize: "12px",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {mobileHeaderTitle}
+                <span style={{ color: "#6d7480" }}> — {activeWorkspace}</span>
+              </div>
+            </div>
+
+            <div style={mobileSignalChipStyle(statusBarTone)}>
+              <StatusPulseIcon tone={statusBarTone} />
+            </div>
+          </div>
 
           <div
             style={{
-              flex: 1,
-              minWidth: 0,
+              height: `${MOBILE_TABBAR_HEIGHT}px`,
+              minHeight: `${MOBILE_TABBAR_HEIGHT}px`,
               display: "flex",
               alignItems: "stretch",
               overflowX: "auto",
-              scrollbarWidth: "thin",
+              background: "#161a21",
+              borderBottom: "1px solid rgba(255,255,255,0.04)",
+              flexShrink: 0,
+              scrollbarWidth: "none",
             }}
           >
             {fileTabs.length === 0 ? (
-              <div style={{ padding: "0 12px", color: "#737b86", fontSize: "12px", display: "flex", alignItems: "center" }}>
-                No file selected
+              <div style={{ padding: "0 14px", display: "flex", alignItems: "center", color: "#6f7680", fontSize: "12px" }}>
+                Open a file from the explorer to begin
               </div>
             ) : (
               fileTabs.map((filename) => (
-                <HeaderTab
+                <MobileHeaderTab
                   key={filename}
                   active={filename === activeFile}
                   filename={filename}
@@ -1712,53 +1829,126 @@ export default function App() {
             )}
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              padding: "0 12px",
-              flexShrink: 0,
-              borderLeft: "1px solid rgba(255,255,255,0.04)",
-              background: "#1a1c21",
-            }}
-          >
-            <button type="button" onClick={handleRun} disabled={runButtonDisabled} style={runButtonStyle(runButtonDisabled)}>
-              ▶ Run
-            </button>
-          </div>
-        </div>
-      </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: "hidden", position: "relative" }}>
+            {mobilePane === "files" ? (
+              <div style={{ height: "100%" }}>{filesPanel}</div>
+            ) : mobilePane === "output" ? (
+              <div style={{ height: "100%" }}>{outputPanel}</div>
+            ) : (
+              <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#111317" }}>
+                <div style={{ flex: 1, minHeight: 0 }}>{editorPanel}</div>
+                <div
+                  style={{
+                    flex: `0 0 ${MOBILE_DOCKED_PANEL_HEIGHT}px`,
+                    minHeight: "180px",
+                    borderTop: "1px solid rgba(255,255,255,0.04)",
+                    background: "#14171c",
+                  }}
+                >
+                  {outputPanel}
+                </div>
+              </div>
+            )}
 
-      {isMobileLayout ? (
-        <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            {mobilePane !== "files" ? (
+              <button
+                type="button"
+                aria-label="Run current file"
+                onClick={handleRun}
+                disabled={runButtonDisabled}
+                style={mobileRunButtonStyle(runButtonDisabled)}
+              >
+                <PlayIcon />
+              </button>
+            ) : null}
+          </div>
+
           <div
             style={{
-              height: "34px",
+              height: `${MOBILE_STATUS_HEIGHT}px`,
+              minHeight: `${MOBILE_STATUS_HEIGHT}px`,
               display: "flex",
               alignItems: "center",
-              gap: "6px",
+              justifyContent: "space-between",
+              gap: "10px",
               padding: "0 10px",
-              background: "#171b21",
-              borderBottom: "1px solid rgba(255,255,255,0.04)",
+              background: "#007acc",
+              color: "#ffffff",
+              fontSize: "11px",
+              borderTop: "1px solid rgba(255,255,255,0.08)",
               flexShrink: 0,
             }}
           >
-            <MobilePaneButton active={mobilePane === "files"} onClick={() => setMobilePane("files")}>
-              Explorer
-            </MobilePaneButton>
-            <MobilePaneButton active={mobilePane === "editor"} onClick={() => setMobilePane("editor")}>
-              Editor
-            </MobilePaneButton>
-            <MobilePaneButton active={mobilePane === "output"} onClick={() => setMobilePane("output")}>
-              {bottomPanelMode === "output" ? "Output" : "Terminal"}
-            </MobilePaneButton>
+            <div style={{ display: "flex", alignItems: "center", gap: "7px", minWidth: 0, flex: 1 }}>
+              <span
+                style={{
+                  width: "7px",
+                  height: "7px",
+                  borderRadius: "999px",
+                  background: statusBarTone,
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {activeStatusMessage}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 }}>
+              <span>{currentLanguageLabel}</span>
+              <span>⚡ Offline-ready</span>
+            </div>
           </div>
 
-          <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-            <div style={{ display: mobilePane === "files" ? "block" : "none", height: "100%" }}>{filesPanel}</div>
-            <div style={{ display: mobilePane === "editor" ? "block" : "none", height: "100%" }}>{editorPanel}</div>
-            <div style={{ display: mobilePane === "output" ? "block" : "none", height: "100%" }}>{outputPanel}</div>
+          <div
+            style={{
+              height: `${MOBILE_NAV_HEIGHT}px`,
+              minHeight: `${MOBILE_NAV_HEIGHT}px`,
+              display: "grid",
+              gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+              gap: "8px",
+              padding: "8px 10px 10px",
+              background: "#151920",
+              borderTop: "1px solid rgba(255,255,255,0.04)",
+              flexShrink: 0,
+            }}
+          >
+            <MobileNavButton
+              active={mobileNavMode === "explorer"}
+              label="Explorer"
+              onClick={() => {
+                setSidebarMode("explorer");
+                setMobilePane("files");
+              }}
+            >
+              <ExplorerIcon />
+            </MobileNavButton>
+            <MobileNavButton
+              active={mobileNavMode === "editor"}
+              label="Editor"
+              onClick={() => setMobilePane("editor")}
+            >
+              <CodeIcon />
+            </MobileNavButton>
+            <MobileNavButton
+              active={mobileNavMode === "search"}
+              label="Search"
+              onClick={() => {
+                setSidebarMode("search");
+                setMobilePane("files");
+              }}
+            >
+              <SearchIcon />
+            </MobileNavButton>
+            <MobileNavButton
+              active={mobileNavMode === "console"}
+              label="Console"
+              onClick={() => {
+                setBottomPanelMode("terminal");
+                setMobilePane("output");
+              }}
+            >
+              <TerminalIcon />
+            </MobileNavButton>
           </div>
         </div>
       ) : (
@@ -1811,48 +2001,50 @@ export default function App() {
         </div>
       )}
 
-      <div
-        style={{
-          height: `${STATUS_BAR_HEIGHT}px`,
-          minHeight: `${STATUS_BAR_HEIGHT}px`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: "12px",
-          padding: "0 10px",
-          background: "#007acc",
-          color: "#ffffff",
-          fontSize: "12px",
-          borderTop: "1px solid rgba(255,255,255,0.1)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
-          <span style={{ ...statusBarTokenStyle(), maxWidth: "220px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {activeWorkspace}
-          </span>
-          <span style={statusBarDividerStyle()} />
-          <span style={{ ...statusBarTokenStyle(), display: "inline-flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
-            <span
-              style={{
-                width: "8px",
-                height: "8px",
-                borderRadius: "999px",
-                background: statusBarTone,
-                flexShrink: 0,
-              }}
-            />
-            <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {activeStatusMessage}
+      {!isMobileLayout ? (
+        <div
+          style={{
+            height: `${STATUS_BAR_HEIGHT}px`,
+            minHeight: `${STATUS_BAR_HEIGHT}px`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            padding: "0 10px",
+            background: "#007acc",
+            color: "#ffffff",
+            fontSize: "12px",
+            borderTop: "1px solid rgba(255,255,255,0.1)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
+            <span style={{ ...statusBarTokenStyle(), maxWidth: "220px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {activeWorkspace}
             </span>
-          </span>
-        </div>
+            <span style={statusBarDividerStyle()} />
+            <span style={{ ...statusBarTokenStyle(), display: "inline-flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "999px",
+                  background: statusBarTone,
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {activeStatusMessage}
+              </span>
+            </span>
+          </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 }}>
-          <span style={statusBarTokenStyle()}>{currentLanguageLabel}</span>
-          <span style={statusBarDividerStyle()} />
-          <span style={statusBarTokenStyle()}>⚡ Offline-ready</span>
+          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0 }}>
+            <span style={statusBarTokenStyle()}>{currentLanguageLabel}</span>
+            <span style={statusBarDividerStyle()} />
+            <span style={statusBarTokenStyle()}>⚡ Offline-ready</span>
+          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -2025,25 +2217,169 @@ function BottomPanelTab({ active = false, children, onClick }) {
   );
 }
 
-function MobilePaneButton({ active = false, children, onClick }) {
+function MobileHeaderTab({ active = false, filename, onSelect, onClose }) {
+  const visual = getFileVisualMeta(filename);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      style={{
+        height: "100%",
+        minWidth: "124px",
+        maxWidth: "186px",
+        padding: "0 12px",
+        border: "none",
+        borderTop: `2px solid ${active ? "#67e8dd" : "transparent"}`,
+        background: active ? "#11161d" : "#161a21",
+        color: active ? "#ffffff" : "#9ca3af",
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        flexShrink: 0,
+        cursor: "pointer",
+      }}
+    >
+      <span
+        style={{
+          width: "14px",
+          height: "14px",
+          borderRadius: "3px",
+          display: "grid",
+          placeItems: "center",
+          background: visual.surface,
+          color: visual.accent,
+          fontSize: "8px",
+          fontWeight: 700,
+          flexShrink: 0,
+        }}
+      >
+        {visual.label}
+      </span>
+      <span
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          textAlign: "left",
+          fontFamily: '"Cascadia Code", Consolas, monospace',
+          fontSize: "12px",
+          letterSpacing: "0.01em",
+        }}
+      >
+        {filename}
+      </span>
+      <span
+        onClick={(event) => {
+          event.stopPropagation();
+          onClose();
+        }}
+        style={{
+          width: "16px",
+          height: "16px",
+          display: "grid",
+          placeItems: "center",
+          borderRadius: "3px",
+          color: active ? "#9ca3af" : "#6b7280",
+          background: active ? "rgba(255,255,255,0.04)" : "transparent",
+          flexShrink: 0,
+        }}
+      >
+        ×
+      </span>
+    </button>
+  );
+}
+
+function MobileNavButton({ active = false, label, children, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
       style={{
-        height: "24px",
         border: "none",
-        background: active ? "#22262d" : "transparent",
-        color: active ? "#ffffff" : "#858585",
-        borderRadius: "4px",
-        padding: "0 10px",
-        fontSize: "12px",
+        background: active ? "rgba(103, 232, 221, 0.12)" : "transparent",
+        color: active ? "#67e8dd" : "#7f8894",
+        borderRadius: "14px",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: "6px",
         cursor: "pointer",
+        transition: "background 120ms ease, color 120ms ease",
       }}
     >
-      {children}
+      <span
+        style={{
+          width: "22px",
+          height: "22px",
+          display: "grid",
+          placeItems: "center",
+        }}
+      >
+        {children}
+      </span>
+      <span
+        style={{
+          fontSize: "11px",
+          fontWeight: active ? 700 : 600,
+          letterSpacing: "0.03em",
+        }}
+      >
+        {label}
+      </span>
     </button>
   );
+}
+
+function mobileTopButtonStyle(active = false) {
+  return {
+    width: "36px",
+    height: "36px",
+    border: "none",
+    background: active ? "rgba(103, 232, 221, 0.12)" : "rgba(255,255,255,0.03)",
+    color: active ? "#67e8dd" : "#d4d4d4",
+    borderRadius: "10px",
+    display: "grid",
+    placeItems: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+  };
+}
+
+function mobileSignalChipStyle(tone) {
+  return {
+    width: "36px",
+    height: "36px",
+    borderRadius: "12px",
+    background: "rgba(255,255,255,0.03)",
+    boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
+    display: "grid",
+    placeItems: "center",
+    color: tone,
+    flexShrink: 0,
+  };
+}
+
+function mobileRunButtonStyle(disabled = false) {
+  return {
+    position: "absolute",
+    right: "16px",
+    bottom: `calc(${MOBILE_NAV_HEIGHT + MOBILE_STATUS_HEIGHT}px + 14px)`,
+    width: "58px",
+    height: "58px",
+    border: "none",
+    borderRadius: "18px",
+    background: disabled ? "#24303a" : "linear-gradient(180deg, #168b80 0%, #106a63 100%)",
+    color: disabled ? "#6d7480" : "#7ef7ea",
+    boxShadow: disabled ? "none" : "0 16px 28px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.12)",
+    display: "grid",
+    placeItems: "center",
+    cursor: disabled ? "not-allowed" : "pointer",
+    zIndex: 6,
+  };
 }
 
 function LogoMark() {
@@ -2119,6 +2455,50 @@ function SearchIcon() {
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <circle cx="6.75" cy="6.75" r="3.75" stroke="currentColor" strokeWidth="1.1" />
       <path d="m9.75 9.75 3 3" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.25 4h11.5M2.25 8h11.5M2.25 12h11.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CodeIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M6 4 2.75 8 6 12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="m10 4 3.25 4L10 12" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function TerminalIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="1.25" stroke="currentColor" strokeWidth="1.1" />
+      <path d="M4.5 6.2 6.8 8 4.5 9.8" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.4 10h2.7" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function StatusPulseIcon({ tone = "#3fb950" }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth="1.2" opacity="0.35" />
+      <circle cx="8" cy="8" r="3" fill={tone} />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M5 3.75v8.5l6.5-4.25L5 3.75Z" fill="currentColor" />
     </svg>
   );
 }
