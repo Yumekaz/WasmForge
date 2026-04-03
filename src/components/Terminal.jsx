@@ -186,26 +186,26 @@ const Terminal = forwardRef(function Terminal({ onResize, isVisible = true }, re
 
     const xterm = new XTerm({
       theme: {
-        background: '#0d1117',
-        foreground: '#c9d1d9',
-        cursor: '#58a6ff',
+        background: '#111317',
+        foreground: '#c7ced6',
+        cursor: '#d4d4d4',
         selectionBackground: '#264f78',
-        black: '#0d1117',
-        red: '#ff7b72',
-        green: '#3fb950',
-        yellow: '#d29922',
-        blue: '#58a6ff',
-        magenta: '#bc8cff',
-        cyan: '#39c5cf',
-        white: '#b1bac4',
-        brightBlack: '#6e7681',
-        brightRed: '#ffa198',
-        brightGreen: '#56d364',
-        brightYellow: '#e3b341',
-        brightBlue: '#79c0ff',
-        brightMagenta: '#d2a8ff',
-        brightCyan: '#56d4dd',
-        brightWhite: '#f0f6fc',
+        black: '#111317',
+        red: '#f48771',
+        green: '#4ec9b0',
+        yellow: '#d7ba7d',
+        blue: '#1997ff',
+        magenta: '#c586c0',
+        cyan: '#4fc1ff',
+        white: '#c7ced6',
+        brightBlack: '#6b7280',
+        brightRed: '#ff9d8a',
+        brightGreen: '#76d4c0',
+        brightYellow: '#e5c07b',
+        brightBlue: '#56b6ff',
+        brightMagenta: '#d7a8d7',
+        brightCyan: '#72d6ff',
+        brightWhite: '#f3f4f6',
       },
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Consolas, monospace',
       fontSize: 13,
@@ -236,8 +236,7 @@ const Terminal = forwardRef(function Terminal({ onResize, isVisible = true }, re
     fitAddonRef.current = fitAddon
     lastDimensionsRef.current = { cols: xterm.cols, rows: xterm.rows }
 
-    xterm.writeln('\x1b[90mWasmForge local runtime\x1b[0m')
-    xterm.writeln('\x1b[90mPreparing local execution environments...\x1b[0m')
+    xterm.writeln('\x1b[90mWasmForge local runtime ready.\x1b[0m')
     xterm.writeln('')
     fitTimeoutRef.current = setTimeout(() => {
       fitTimeoutRef.current = null
@@ -351,8 +350,8 @@ const Terminal = forwardRef(function Terminal({ onResize, isVisible = true }, re
       style={{
         width: '100%',
         height: '100%',
-        background: '#0f1318',
-        padding: '8px 10px',
+        background: '#111317',
+        padding: '8px 12px',
         boxSizing: 'border-box',
         borderRadius: 0,
       }}

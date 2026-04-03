@@ -22,11 +22,11 @@ const ACTIVE_WORKSPACE_STORAGE_KEY = "wasmforge:active-workspace";
 const RECOVERY_STORAGE_KEY_PREFIX = "wasmforge:pending-workspace-writes";
 const MOBILE_LAYOUT_BREAKPOINT = 960;
 const ACTIVITY_BAR_WIDTH = 40;
-const DEFAULT_SIDEBAR_WIDTH = 260;
+const DEFAULT_SIDEBAR_WIDTH = 280;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 420;
 const SIDEBAR_RESIZE_HANDLE_WIDTH = 6;
-const TOP_HEADER_HEIGHT = 40;
+const TOP_HEADER_HEIGHT = 60;
 const STATUS_BAR_HEIGHT = 22;
 const BOTTOM_TABBAR_HEIGHT = 35;
 const EDITOR_SPLIT_HANDLE_HEIGHT = 6;
@@ -1485,8 +1485,7 @@ export default function App() {
         minWidth: 0,
         minHeight: 0,
         overflow: "hidden",
-        background: "linear-gradient(180deg, rgba(255,255,255,0.015) 0%, rgba(255,255,255,0) 34%), #14181e",
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02), 0 20px 48px rgba(0,0,0,0.18)",
+        background: "#1e1e1e",
       }}
     >
       {files.length === 0 ? (
@@ -1503,7 +1502,7 @@ export default function App() {
                 placeItems: "center",
                 color: "#858585",
                 fontSize: "13px",
-                background: "#14181e",
+                background: "#1e1e1e",
               }}
             >
               Loading editor...
@@ -1531,8 +1530,7 @@ export default function App() {
         minHeight: 0,
         display: "flex",
         flexDirection: "column",
-        background: "#111417",
-        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
+        background: "#14171c",
       }}
     >
       <div
@@ -1542,7 +1540,7 @@ export default function App() {
           alignItems: "stretch",
           justifyContent: "space-between",
           borderBottom: "1px solid rgba(255,255,255,0.04)",
-          background: "#171b21",
+          background: "#1a1c21",
           flexShrink: 0,
         }}
       >
@@ -1577,7 +1575,7 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ flex: 1, minHeight: 0, position: "relative", background: "#111417" }}>
+      <div style={{ flex: 1, minHeight: 0, position: "relative", background: "#111317" }}>
         <div style={{ display: terminalVisible ? "block" : "none", height: "100%" }}>
           <Terminal ref={terminalRef} isVisible={terminalVisible} />
         </div>
@@ -1606,7 +1604,7 @@ export default function App() {
         minHeight: "100dvh",
         height: "100dvh",
         overflow: "hidden",
-        background: "radial-gradient(circle at top left, rgba(0,122,204,0.18), transparent 22%), radial-gradient(circle at top right, rgba(74,163,100,0.08), transparent 18%), #0c1015",
+        background: "#111317",
         color: "#d4d4d4",
         fontFamily: '"Segoe UI Variable Text", "Segoe UI", sans-serif',
         display: "flex",
@@ -1618,88 +1616,127 @@ export default function App() {
           height: `${TOP_HEADER_HEIGHT}px`,
           minHeight: `${TOP_HEADER_HEIGHT}px`,
           display: "flex",
-          alignItems: "stretch",
-          background: "linear-gradient(180deg, #232830 0%, #1c2027 100%)",
-          borderBottom: "1px solid rgba(255,255,255,0.04)",
-          boxShadow: "inset 0 -1px 0 rgba(255,255,255,0.02), 0 12px 32px rgba(0,0,0,0.18)",
+          flexDirection: "column",
+          background: "#1a1c21",
+          borderBottom: "1px solid #111317",
         }}
       >
         <div
           style={{
-            width: isMobileLayout ? "auto" : `${desktopNavWidth}px`,
-            minWidth: isMobileLayout ? "auto" : `${desktopNavWidth}px`,
             display: "flex",
             alignItems: "center",
-            gap: "8px",
+            gap: "14px",
+            height: "28px",
+            minHeight: "28px",
             padding: "0 12px",
-            flexShrink: 0,
-            borderRight: isMobileLayout ? "none" : "1px solid rgba(255,255,255,0.04)",
-            background: "linear-gradient(180deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%)",
+            borderBottom: "1px solid rgba(255,255,255,0.04)",
+            background: "#1b1d22",
           }}
         >
-          <LogoMark />
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0 }}>
-            <div style={{ color: "#ffffff", fontSize: "13px", fontWeight: 600 }}>WasmForge</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flexShrink: 0 }}>
+            <LogoMark />
+            <div style={{ color: "#ffffff", fontSize: "13px", fontWeight: 600, whiteSpace: "nowrap" }}>WasmForge</div>
             {!isMobileLayout ? (
-              <span
-                style={{
-                  color: "#7e8692",
-                  fontSize: "10px",
-                  letterSpacing: "0.12em",
-                  textTransform: "uppercase",
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <div style={{ color: "#6e7681", fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.12em" }}>
                 Local IDE
-              </span>
+              </div>
             ) : null}
           </div>
+
+          {!isMobileLayout ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "14px", color: "#9aa3ae", fontSize: "11px", flexShrink: 0 }}>
+              <ToolbarMenuLabel>File</ToolbarMenuLabel>
+              <ToolbarMenuLabel>Edit</ToolbarMenuLabel>
+              <ToolbarMenuLabel>Selection</ToolbarMenuLabel>
+              <ToolbarMenuLabel>Terminal</ToolbarMenuLabel>
+              <ToolbarMenuLabel>Help</ToolbarMenuLabel>
+            </div>
+          ) : null}
+
+          <div style={{ flex: 1, minWidth: 0, display: "flex", justifyContent: "center", padding: "0 8px" }}>
+            <ToolbarSearch
+              value={fileSearchQuery}
+              onChange={(value) => {
+                setSidebarMode("search");
+                setFileSearchQuery(value);
+              }}
+              onFocus={() => setSidebarMode("search")}
+            />
+          </div>
+
+          {!isMobileLayout ? (
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", color: "#666d76", fontSize: "10px", textTransform: "uppercase", letterSpacing: "0.1em", flexShrink: 0 }}>
+              <span>Project</span>
+              <span style={{ color: "#1997ff", fontWeight: 700, letterSpacing: "0.04em", textTransform: "none", fontSize: "11px", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {activeWorkspace}
+              </span>
+            </div>
+          ) : null}
         </div>
 
         <div
           style={{
-            flex: 1,
-            minWidth: 0,
             display: "flex",
             alignItems: "stretch",
-            overflowX: "auto",
-            scrollbarWidth: "thin",
-            background: "linear-gradient(180deg, rgba(255,255,255,0.015) 0%, rgba(255,255,255,0) 100%)",
+            minHeight: "31px",
+            background: "#1a1c21",
           }}
         >
-          {fileTabs.length === 0 ? (
-            <div style={{ padding: "0 12px", color: "#737b86", fontSize: "12px", display: "flex", alignItems: "center" }}>
-              No file selected
-            </div>
-          ) : (
-            fileTabs.map((filename) => (
-              <HeaderTab
-                key={filename}
-                active={filename === activeFile}
-                filename={filename}
-                onSelect={() => {
-                  void handleFileSelect(filename);
-                }}
-                onClose={() => handleCloseTab(filename)}
-              />
-            ))
-          )}
-        </div>
+          {!isMobileLayout ? (
+            <div
+              style={{
+                width: `${desktopNavWidth}px`,
+                minWidth: `${desktopNavWidth}px`,
+                borderRight: "1px solid rgba(255,255,255,0.04)",
+                background: "#1a1c21",
+              }}
+            />
+          ) : null}
 
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            padding: "0 12px",
-            flexShrink: 0,
-            borderLeft: "1px solid rgba(255,255,255,0.04)",
-            background: "linear-gradient(180deg, rgba(255,255,255,0.02) 0%, rgba(255,255,255,0.005) 100%)",
-          }}
-        >
-          <button type="button" onClick={handleRun} disabled={runButtonDisabled} style={runButtonStyle(runButtonDisabled)}>
-            ▶ Run
-          </button>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              alignItems: "stretch",
+              overflowX: "auto",
+              scrollbarWidth: "thin",
+            }}
+          >
+            {fileTabs.length === 0 ? (
+              <div style={{ padding: "0 12px", color: "#737b86", fontSize: "12px", display: "flex", alignItems: "center" }}>
+                No file selected
+              </div>
+            ) : (
+              fileTabs.map((filename) => (
+                <HeaderTab
+                  key={filename}
+                  active={filename === activeFile}
+                  filename={filename}
+                  onSelect={() => {
+                    void handleFileSelect(filename);
+                  }}
+                  onClose={() => handleCloseTab(filename)}
+                />
+              ))
+            )}
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              padding: "0 12px",
+              flexShrink: 0,
+              borderLeft: "1px solid rgba(255,255,255,0.04)",
+              background: "#1a1c21",
+            }}
+          >
+            <button type="button" onClick={handleRun} disabled={runButtonDisabled} style={runButtonStyle(runButtonDisabled)}>
+              ▶ Run
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1739,14 +1776,13 @@ export default function App() {
           <div
             style={{
               width: `${ACTIVITY_BAR_WIDTH}px`,
-              background: "linear-gradient(180deg, #141922 0%, #10151d 100%)",
+              background: "#17191d",
               borderRight: "1px solid rgba(255,255,255,0.04)",
               display: "flex",
               flexDirection: "column",
               alignItems: "stretch",
               paddingTop: "10px",
               flexShrink: 0,
-              boxShadow: "inset -1px 0 0 rgba(255,255,255,0.02)",
             }}
           >
             <ActivityButton active={sidebarMode === "explorer"} title="Explorer" onClick={() => setSidebarMode("explorer")}>
@@ -1760,11 +1796,10 @@ export default function App() {
           <div
             style={{
               width: `${sidebarWidth}px`,
-              background: "linear-gradient(180deg, rgba(22,27,36,0.98) 0%, rgba(17,21,28,1) 100%)",
+              background: "#17191d",
               borderRight: "1px solid rgba(255,255,255,0.04)",
               minWidth: 0,
               flexShrink: 0,
-              boxShadow: "inset -1px 0 0 rgba(255,255,255,0.02), 24px 0 48px rgba(0,0,0,0.22)",
             }}
           >
             {filesPanel}
@@ -1795,10 +1830,10 @@ export default function App() {
           justifyContent: "space-between",
           gap: "12px",
           padding: "0 10px",
-          background: "#006cc4",
+          background: "#007acc",
           color: "#ffffff",
           fontSize: "12px",
-          borderTop: "1px solid rgba(255,255,255,0.08)",
+          borderTop: "1px solid rgba(255,255,255,0.1)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
@@ -1840,12 +1875,12 @@ function HorizontalResizeHandle({ onPointerDown }) {
         height: `${EDITOR_SPLIT_HANDLE_HEIGHT}px`,
         flexShrink: 0,
         cursor: "row-resize",
-        background: "#111417",
+        background: "#15181d",
         display: "grid",
         placeItems: "center",
       }}
     >
-      <div style={{ width: "48px", height: "1px", background: "#2f353f" }} />
+      <div style={{ width: "48px", height: "1px", background: "#2a2f36" }} />
     </div>
   );
 }
@@ -1858,7 +1893,7 @@ function VerticalResizeHandle({ onPointerDown }) {
         width: `${SIDEBAR_RESIZE_HANDLE_WIDTH}px`,
         flexShrink: 0,
         cursor: "col-resize",
-        background: "#10151d",
+        background: "#15181d",
         position: "relative",
       }}
     >
@@ -1870,7 +1905,7 @@ function VerticalResizeHandle({ onPointerDown }) {
           left: "50%",
           width: "1px",
           transform: "translateX(-50%)",
-          background: "rgba(255,255,255,0.04)",
+          background: "rgba(255,255,255,0.05)",
         }}
       />
     </div>
@@ -1888,13 +1923,12 @@ function ActivityButton({ active = false, children, disabled = false, title, onC
         height: "40px",
         border: "none",
         borderLeft: `2px solid ${active ? "#007acc" : "transparent"}`,
-        background: active ? "linear-gradient(180deg, rgba(0,122,204,0.16) 0%, rgba(255,255,255,0.03) 100%)" : "transparent",
+        background: active ? "rgba(255,255,255,0.03)" : "transparent",
         color: active ? "#ffffff" : "#858585",
         display: "grid",
         placeItems: "center",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.8 : 1,
-        boxShadow: active ? "inset 0 1px 0 rgba(255,255,255,0.03)" : "none",
       }}
     >
       {children}
@@ -1909,36 +1943,34 @@ function HeaderTab({ active = false, filename, onSelect, onClose }) {
       type="button"
       onClick={onSelect}
       style={{
-        height: "35px",
-        minWidth: "132px",
+        height: "31px",
+        minWidth: "124px",
         maxWidth: "220px",
         padding: "0 10px",
         border: "none",
         borderTop: `1px solid ${active ? "#007acc" : "transparent"}`,
         borderRight: "1px solid rgba(255,255,255,0.035)",
-        background: active ? "#15191f" : "#22262d",
-        color: active ? "#ffffff" : "#d4d4d4",
+        background: active ? "#1e2127" : "#1a1c21",
+        color: active ? "#ffffff" : "#b8bec6",
         display: "flex",
         alignItems: "center",
         gap: "8px",
         cursor: "pointer",
         flexShrink: 0,
-        boxShadow: active ? "inset 0 1px 0 rgba(255,255,255,0.025)" : "none",
       }}
     >
       <span
         style={{
-          width: "16px",
-          height: "16px",
-          borderRadius: "4px",
+          width: "14px",
+          height: "14px",
+          borderRadius: "3px",
           display: "grid",
           placeItems: "center",
           background: visual.surface,
           color: visual.accent,
-          fontSize: "9px",
+          fontSize: "8px",
           fontWeight: 700,
           flexShrink: 0,
-          boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.025)",
         }}
       >
         {visual.label}
@@ -1948,7 +1980,7 @@ function HeaderTab({ active = false, filename, onSelect, onClose }) {
           flex: 1,
           minWidth: 0,
           fontFamily: '"Cascadia Code", Consolas, monospace',
-          fontSize: "13px",
+          fontSize: "12px",
           overflow: "hidden",
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
@@ -1971,7 +2003,7 @@ function HeaderTab({ active = false, filename, onSelect, onClose }) {
           height: "16px",
           display: "grid",
           placeItems: "center",
-          borderRadius: "4px",
+          borderRadius: "3px",
           background: active ? "rgba(255,255,255,0.03)" : "transparent",
         }}
       >
@@ -1988,7 +2020,7 @@ function BottomPanelTab({ active = false, children, onClick }) {
       onClick={onClick}
       style={{
         border: "none",
-        borderBottom: `2px solid ${active ? "#007acc" : "transparent"}`,
+        borderBottom: `1px solid ${active ? "#007acc" : "transparent"}`,
         background: "transparent",
         color: active ? "#ffffff" : "#858585",
         padding: "0 14px",
@@ -2030,18 +2062,85 @@ function LogoMark() {
       style={{
         width: "18px",
         height: "18px",
-        borderRadius: "5px",
+        borderRadius: "4px",
         display: "grid",
         placeItems: "center",
-        background: "#007acc",
+        background: "linear-gradient(180deg, #0d8ef2 0%, #0068bf 100%)",
         color: "#ffffff",
         fontSize: "10px",
         fontWeight: 800,
-        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18)",
+        boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.18), 0 6px 12px rgba(0,122,204,0.24)",
       }}
     >
       W
     </div>
+  );
+}
+
+function ToolbarMenuLabel({ children }) {
+  return (
+    <span
+      style={{
+        color: "#8f98a3",
+        fontSize: "11px",
+        fontWeight: 500,
+        letterSpacing: "0.01em",
+        userSelect: "none",
+        cursor: "default",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function ToolbarSearch({ value, onChange, onFocus }) {
+  return (
+    <label
+      style={{
+        width: "100%",
+        maxWidth: "420px",
+        height: "26px",
+        display: "flex",
+        alignItems: "center",
+        gap: "8px",
+        padding: "0 10px",
+        background: "#121419",
+        border: "1px solid rgba(255,255,255,0.06)",
+        color: "#7d8590",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
+      }}
+    >
+      <SearchIcon />
+      <input
+        value={value}
+        onChange={(event) => onChange?.(event.target.value)}
+        onFocus={onFocus}
+        placeholder="Search workspace files"
+        spellCheck={false}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          border: "none",
+          outline: "none",
+          background: "transparent",
+          color: "#d4d4d4",
+          fontSize: "12px",
+        }}
+      />
+      <span
+        style={{
+          flexShrink: 0,
+          color: "#5e6670",
+          fontSize: "10px",
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          userSelect: "none",
+        }}
+      >
+        Search
+      </span>
+    </label>
   );
 }
 
@@ -2071,7 +2170,7 @@ function OutputPlaceholder({ activeFile }) {
         height: "100%",
         display: "grid",
         placeItems: "center",
-        background: "#13171c",
+        background: "#121418",
         color: "#858585",
         padding: "24px",
         textAlign: "center",
@@ -2086,14 +2185,14 @@ function OutputPlaceholder({ activeFile }) {
             minWidth: "42px",
             height: "18px",
             padding: "0 8px",
-            borderRadius: "4px",
+            borderRadius: "3px",
             background: visual.surface,
             color: visual.accent,
             fontSize: "10px",
             fontWeight: 700,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
-            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.025)",
+            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.035)",
           }}
         >
           {visual.label}
@@ -2117,7 +2216,7 @@ function EmptyEditorState({ workspaceName, hasFiles = false, isMobile = false })
         display: "grid",
         placeItems: "center",
         padding: isMobile ? "18px" : "24px",
-        background: "#12161b",
+        background: "#17191d",
       }}
     >
       <div
@@ -2127,7 +2226,7 @@ function EmptyEditorState({ workspaceName, hasFiles = false, isMobile = false })
           padding: isMobile ? "20px" : "24px",
         }}
       >
-        <div style={{ color: "#bbbbbb", fontSize: "11px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+        <div style={{ color: "#8b949e", fontSize: "11px", fontWeight: 700, letterSpacing: "0.14em", textTransform: "uppercase" }}>
           Explorer
         </div>
         <div
@@ -2137,12 +2236,12 @@ function EmptyEditorState({ workspaceName, hasFiles = false, isMobile = false })
             gap: "8px",
             marginTop: "12px",
             padding: "4px 10px",
-            borderRadius: "4px",
-            background: "rgba(255,255,255,0.025)",
+            borderRadius: "3px",
+            background: "#1a1d22",
             color: "#d4d4d4",
             fontFamily: '"Cascadia Code", Consolas, monospace',
             fontSize: "11px",
-            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.025)",
+            boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
           }}
         >
           <span style={{ width: "7px", height: "7px", borderRadius: "999px", background: "#007acc", flexShrink: 0 }} />
@@ -2163,30 +2262,30 @@ function EmptyEditorState({ workspaceName, hasFiles = false, isMobile = false })
 
 function terminalActionButtonStyle({ color = "#d4d4d4" } = {}) {
   return {
-    border: "1px solid rgba(255,255,255,0.04)",
-    background: "rgba(255,255,255,0.02)",
+    border: "none",
+    background: "transparent",
     color,
     fontSize: "11px",
     cursor: "pointer",
-    padding: "4px 9px",
-    borderRadius: "4px",
+    padding: "0 2px",
+    letterSpacing: "0.03em",
   };
 }
 
 function runButtonStyle(disabled = false) {
   return {
     height: "28px",
-    border: disabled ? "1px solid rgba(255,255,255,0.04)" : "1px solid rgba(63,185,80,0.35)",
+    border: disabled ? "1px solid rgba(255,255,255,0.04)" : "1px solid rgba(0,122,204,0.48)",
     borderRadius: "4px",
-    background: disabled ? "#252a24" : "linear-gradient(180deg, #1f3024 0%, #17211a 100%)",
-    color: disabled ? "#8e969f" : "#7ee787",
+    background: disabled ? "#1d2229" : "linear-gradient(180deg, #0e83e6 0%, #0069c2 100%)",
+    color: disabled ? "#7f8894" : "#ffffff",
     padding: "0 12px",
     fontSize: "12px",
     fontWeight: 700,
     letterSpacing: "0.04em",
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.82 : 1,
-    boxShadow: disabled ? "none" : "inset 0 1px 0 rgba(255,255,255,0.04)",
+    boxShadow: disabled ? "none" : "inset 0 1px 0 rgba(255,255,255,0.18), 0 10px 18px rgba(0,122,204,0.22)",
   };
 }
 
