@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "../landing.css";
 
 const heroEditorLines = [
@@ -99,6 +99,7 @@ const stackGroups = [
 
 const revealSelector = ".wf-rv";
 const repositoryUrl = "https://github.com/Yumekaz/WasmForge";
+const landingThemeStorageKey = "wasmforge:landing-theme";
 const proofSteps = [
   "Open the IDE. Write a Python script, JavaScript file, or SQL query.",
   "Turn Wi-Fi off. Airplane Mode is the real test.",
@@ -115,8 +116,19 @@ function outputDelay(index) {
 }
 
 export default function LandingPage({ onOpenIde }) {
+  const [theme, setTheme] = useState(() => {
+    if (typeof window === "undefined") {
+      return "default";
+    }
+
+    return window.localStorage.getItem(landingThemeStorageKey) === "inverted"
+      ? "inverted"
+      : "default";
+  });
   const [wifiOnline, setWifiOnline] = useState(true);
   const [visibleOutputCount, setVisibleOutputCount] = useState(0);
+  const [themeTransition, setThemeTransition] = useState(null);
+  const themeTransitionTimersRef = useRef([]);
 
   const outputBannerVisible = visibleOutputCount >= outputLines.length;
   const proofStepsVisible = !wifiOnline;
@@ -125,6 +137,13 @@ export default function LandingPage({ onOpenIde }) {
     document.body.dataset.page = "landing";
     return () => {
       delete document.body.dataset.page;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      themeTransitionTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      themeTransitionTimersRef.current = [];
     };
   }, []);
 
@@ -143,6 +162,15 @@ export default function LandingPage({ onOpenIde }) {
       timers.forEach((timer) => window.clearTimeout(timer));
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return undefined;
+    }
+
+    window.localStorage.setItem(landingThemeStorageKey, theme);
+    return undefined;
+  }, [theme]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") {
@@ -179,8 +207,50 @@ export default function LandingPage({ onOpenIde }) {
     window.location.assign("/ide");
   };
 
+  const handleThemeToggle = (event) => {
+    if (themeTransition) {
+      return;
+    }
+
+    const nextTheme = theme === "default" ? "inverted" : "default";
+    const rect = event.currentTarget.getBoundingClientRect();
+    const revealX = rect.left + rect.width / 2;
+    const revealY = rect.top + rect.height / 2;
+
+    themeTransitionTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    themeTransitionTimersRef.current = [];
+
+    setThemeTransition({
+      x: revealX,
+      y: revealY,
+      theme: nextTheme,
+      key: Date.now(),
+    });
+
+    setTheme(nextTheme);
+
+    const cleanupTimer = window.setTimeout(() => {
+      setThemeTransition(null);
+      themeTransitionTimersRef.current = [];
+    }, 900);
+
+    themeTransitionTimersRef.current = [cleanupTimer];
+  };
+
   return (
-    <div className="wf-landing">
+    <div className="wf-landing" data-theme={theme}>
+      {themeTransition ? (
+        <div
+          key={themeTransition.key}
+          className={`wf-theme-reveal wf-theme-reveal--${themeTransition.theme}`}
+          style={{
+            "--wf-reveal-x": `${themeTransition.x}px`,
+            "--wf-reveal-y": `${themeTransition.y}px`,
+          }}
+          aria-hidden="true"
+        />
+      ) : null}
+
       <nav className="wf-nav">
         <a href="/" className="wf-nav__logo" aria-label="WasmForge home">
           <div className="wf-logo-icon">W</div>
@@ -197,6 +267,16 @@ export default function LandingPage({ onOpenIde }) {
         </ul>
 
         <div className="wf-nav__actions">
+          <button
+            type="button"
+            className="wf-btn wf-btn--theme"
+            aria-label={theme === "default" ? "Switch to dusk theme" : "Switch to forge theme"}
+            title={theme === "default" ? "Switch to dusk theme" : "Switch to forge theme"}
+            onClick={handleThemeToggle}
+            disabled={Boolean(themeTransition)}
+          >
+            {theme === "default" ? "◐" : "◑"}
+          </button>
           <a href={repositoryUrl} className="wf-btn wf-btn--ghost" target="_blank" rel="noreferrer">
             Source
           </a>
