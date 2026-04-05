@@ -275,7 +275,10 @@ export default function LandingPage({ onOpenIde }) {
             onClick={handleThemeToggle}
             disabled={Boolean(themeTransition)}
           >
-            {theme === "default" ? "◐" : "◑"}
+            <span
+              className={`wf-theme-toggle wf-theme-toggle--${theme}`}
+              aria-hidden="true"
+            />
           </button>
           <a href={repositoryUrl} className="wf-btn wf-btn--ghost" target="_blank" rel="noreferrer">
             Source

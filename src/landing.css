@@ -230,6 +230,80 @@ body[data-page="landing"] ::selection {
   display: grid;
   place-items: center;
   background: rgba(255, 255, 255, 0.02);
+  position: relative;
+  padding: 0;
+}
+
+.wf-btn--theme:hover {
+  border-color: var(--landing-border-strong);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.wf-theme-toggle {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  display: block;
+  border-radius: 50%;
+  border: 1px solid rgba(236, 236, 239, 0.12);
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.025) 0%, rgba(255, 255, 255, 0.01) 62%, transparent 100%),
+    rgba(255, 255, 255, 0.018);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.035),
+    0 0 0 4px rgba(255, 255, 255, 0.02);
+  transition:
+    border-color 240ms ease,
+    box-shadow 240ms ease,
+    background 240ms ease;
+}
+
+.wf-theme-toggle::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4f3788 50%, #09090b 50%);
+  transform: rotate(-16deg) scale(1);
+  transition:
+    transform .45s cubic-bezier(.4, 0, .2, 1),
+    background .45s cubic-bezier(.4, 0, .2, 1),
+    box-shadow .45s cubic-bezier(.4, 0, .2, 1);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 0 12px rgba(79, 55, 136, 0.18);
+}
+
+.wf-theme-toggle::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+}
+
+.wf-theme-toggle--inverted::before {
+  background: linear-gradient(135deg, #f0eaf8 50%, #3a2868 50%);
+  transform: rotate(22deg) scale(1);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 0 14px rgba(240, 234, 248, 0.12);
+}
+
+.wf-btn--theme:hover .wf-theme-toggle {
+  border-color: rgba(236, 236, 239, 0.18);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.045),
+    0 0 0 4px rgba(180, 138, 234, 0.05);
+}
+
+.wf-btn--theme:hover .wf-theme-toggle::before {
+  transform: rotate(0deg) scale(1.03);
+}
+
+.wf-btn--theme:disabled .wf-theme-toggle {
+  opacity: 0.86;
 }
 
 .wf-btn--ghost {
