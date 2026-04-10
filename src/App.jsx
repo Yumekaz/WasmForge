@@ -40,6 +40,10 @@ const MOBILE_DOCKED_PANEL_HEIGHT = 228;
 const MIN_EDITOR_PANEL_HEIGHT = 96;
 const MIN_TERMINAL_PANEL_HEIGHT = 160;
 const DEFAULT_EDITOR_RATIO = 0.65;
+const SHARE_HASH_PREFIX = "#share=";
+const SHARE_PAYLOAD_VERSION = 1;
+const MAX_SHARE_URL_LENGTH = 12000;
+const SHARE_STATUS_RESET_MS = 2600;
 const Editor = lazy(() => import("./components/Editor.jsx"));
 
 const IDE_THEME_PALETTES = {
@@ -214,6 +218,137 @@ function normalizeWorkspaceName(name) {
     throw new Error("Workspace names cannot contain slashes.");
   }
   return normalized;
+}
+
+function encodeBase64UrlUtf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+
+  return btoa(binary)
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/u, "");
+}
+
+function decodeBase64UrlUtf8(value) {
+  const normalized = String(value ?? "")
+    .replace(/-/gu, "+")
+    .replace(/_/gu, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  return new TextDecoder().decode(bytes);
+}
+
+function createStableShareHash(value) {
+  let hash = 2166136261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0).toString(36);
+}
+
+function slugifyShareSegment(value, fallback = "snippet") {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
+
+  return normalized || fallback;
+}
+
+function createSharePayload(filename, code) {
+  return {
+    v: SHARE_PAYLOAD_VERSION,
+    f: filename,
+    c: code,
+  };
+}
+
+function encodeSharePayload(filename, code) {
+  return encodeBase64UrlUtf8(JSON.stringify(createSharePayload(filename, code)));
+}
+
+function decodeSharePayload(encodedPayload) {
+  const decoded = JSON.parse(decodeBase64UrlUtf8(encodedPayload));
+  const filename = normalizeWorkspaceFilename(decoded?.f ?? decoded?.filename ?? DEFAULT_FILENAME);
+  const code = decoded?.c ?? decoded?.code;
+
+  if (decoded?.v !== SHARE_PAYLOAD_VERSION) {
+    throw new Error("Unsupported share link version.");
+  }
+
+  if (typeof code !== "string") {
+    throw new Error("Shared link is missing file contents.");
+  }
+
+  return { filename, code };
+}
+
+function readSharedPayloadFromHash(hash) {
+  const rawHash = String(hash ?? "");
+  if (!rawHash.startsWith(SHARE_HASH_PREFIX)) {
+    return null;
+  }
+
+  const encodedPayload = rawHash.slice(SHARE_HASH_PREFIX.length);
+  if (!encodedPayload) {
+    return { error: "Shared link is missing payload data." };
+  }
+
+  try {
+    return { payload: decodeSharePayload(encodedPayload) };
+  } catch (error) {
+    return { error: error?.message || "Invalid shared link." };
+  }
+}
+
+function clearSharedPayloadHash() {
+  if (typeof window === "undefined" || !window.location.hash.startsWith(SHARE_HASH_PREFIX)) {
+    return;
+  }
+
+  const nextUrl = `${window.location.pathname}${window.location.search}`;
+  window.history.replaceState(window.history.state, "", nextUrl);
+}
+
+function createSharedWorkspaceName(filename, code) {
+  const stem = filename.replace(/\.[^.]+$/u, "");
+  const suffix = createStableShareHash(`${filename}\n${code}`).slice(0, 8);
+  const slug = slugifyShareSegment(stem, "snippet").slice(0, 20);
+  return normalizeWorkspaceName(`shared-${slug}-${suffix}`);
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+
+  if (!copied) {
+    throw new Error("Clipboard access is unavailable.");
+  }
 }
 
 function chooseActiveFile(filenames, preferredFile) {
@@ -402,6 +537,8 @@ export default function App({ onNavigateHome }) {
   const [sidebarMode, setSidebarMode] = useState("explorer");
   const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [bottomPanelMode, setBottomPanelMode] = useState("terminal");
+  const [shareStatus, setShareStatus] = useState({ tone: "idle", label: "Share" });
+  const [shareHashSignal, setShareHashSignal] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(
     typeof window === "undefined" ? 1280 : window.innerWidth,
   );
@@ -416,7 +553,10 @@ export default function App({ onNavigateHome }) {
   const editorSubscriptionRef = useRef(null);
   const activeFileRef = useRef(DEFAULT_FILENAME);
   const activeWorkspaceRef = useRef(activeWorkspace);
+  const isMountedRef = useRef(true);
   const recoveryWritesRef = useRef(readRecoveryEntries(activeWorkspace));
+  const shareStatusTimeoutRef = useRef(null);
+  const shareImportKeyRef = useRef("");
   const ideTheme = theme;
   const idePalette = useMemo(() => getIdePalette(ideTheme), [ideTheme]);
   const ideCssVars = useMemo(() => getIdeCssVars(idePalette), [idePalette]);
@@ -459,6 +599,26 @@ export default function App({ onNavigateHome }) {
   }, []);
 
   useEffect(() => {
+    const syncSharedPayload = () => {
+      setShareHashSignal((value) => value + 1);
+    };
+
+    window.addEventListener("hashchange", syncSharedPayload);
+    return () => {
+      window.removeEventListener("hashchange", syncSharedPayload);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+      if (shareStatusTimeoutRef.current !== null) {
+        clearTimeout(shareStatusTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     activeFileRef.current = activeFile;
   }, [activeFile]);
 
@@ -478,6 +638,12 @@ export default function App({ onNavigateHome }) {
       return next;
     });
   }, [activeFile, files]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !readSharedPayloadFromHash(window.location.hash)) {
+      shareImportKeyRef.current = "";
+    }
+  }, [shareHashSignal]);
 
   useEffect(() => {
     activeWorkspaceRef.current = activeWorkspace;
@@ -642,6 +808,18 @@ export default function App({ onNavigateHome }) {
     },
     [writeStderr],
   );
+
+  const publishShareStatus = useCallback((label, tone = "idle") => {
+    if (shareStatusTimeoutRef.current !== null) {
+      clearTimeout(shareStatusTimeoutRef.current);
+    }
+
+    setShareStatus({ label, tone });
+    shareStatusTimeoutRef.current = window.setTimeout(() => {
+      setShareStatus({ label: "Share", tone: "idle" });
+      shareStatusTimeoutRef.current = null;
+    }, SHARE_STATUS_RESET_MS);
+  }, []);
 
   const stageRecoveryWrite = useCallback((filename, content, workspaceName = activeWorkspaceRef.current) => {
     const scopedWorkspaceName = workspaceName || activeWorkspaceRef.current;
@@ -1420,6 +1598,130 @@ export default function App({ onNavigateHome }) {
     syncActiveEditorDraft,
   ]);
 
+  const handleShareLink = useCallback(async () => {
+    const snapshot = getActiveEditorSnapshot();
+    const file = files.find((entry) => entry.name === activeFile);
+    const filename = snapshot?.filename || file?.name || activeFile;
+
+    if (!filename) {
+      publishShareStatus("No file", "error");
+      return;
+    }
+
+    const code =
+      snapshot?.filename === filename
+        ? snapshot.content
+        : file?.content ?? "";
+
+    try {
+      const encodedPayload = encodeSharePayload(filename, code);
+      const shareUrl = new URL(window.location.href);
+      shareUrl.pathname = "/ide";
+      shareUrl.search = "";
+      shareUrl.hash = SHARE_HASH_PREFIX.slice(1) + encodedPayload;
+
+      if (shareUrl.toString().length > MAX_SHARE_URL_LENGTH) {
+        throw new Error("File is too large to share safely as a URL.");
+      }
+
+      await copyTextToClipboard(shareUrl.toString());
+      terminalRef.current?.writeln(`\x1b[36m[Share] Link copied for ${filename}\x1b[0m`);
+      publishShareStatus("Copied", "success");
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Share] ${error.message || error}\x1b[0m`);
+      publishShareStatus("Share failed", "error");
+    }
+  }, [activeFile, files, getActiveEditorSnapshot, publishShareStatus]);
+
+  useEffect(() => {
+    const sharedPayload =
+      typeof window === "undefined" ? null : readSharedPayloadFromHash(window.location.hash);
+    const runtimeBusy = isRunning || isJsRunning || isSqlRunning;
+    if (!sharedPayload || !isIOWorkerReady || !workspaceBootstrapped || runtimeBusy) {
+      return;
+    }
+
+    const shareImportKey = sharedPayload.error
+      ? `error:${sharedPayload.error}`
+      : `${sharedPayload.payload.filename}\n${sharedPayload.payload.code}`;
+
+    if (shareImportKeyRef.current === shareImportKey) {
+      return;
+    }
+
+    shareImportKeyRef.current = shareImportKey;
+
+    const importSharedPayload = async () => {
+      if (sharedPayload.error) {
+        throw new Error(sharedPayload.error);
+      }
+
+      const { filename, code } = sharedPayload.payload;
+      const sharedWorkspaceName = createSharedWorkspaceName(filename, code);
+
+      await prepareWorkspaceMutation("opening a shared link");
+      const knownWorkspaces = await listWorkspaces();
+      if (!knownWorkspaces.includes(sharedWorkspaceName)) {
+        await createWorkspace(sharedWorkspaceName);
+      }
+
+      await writeFile(filename, code, "workspace", sharedWorkspaceName);
+      clearRecoveryWrite(filename, sharedWorkspaceName);
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setWorkspaces((prev) => {
+        const next = prev.includes(sharedWorkspaceName)
+          ? prev
+          : [...prev, sharedWorkspaceName];
+        return next.slice().sort((left, right) => left.localeCompare(right));
+      });
+      setSqlExecution(createEmptySqlExecution());
+      setPythonExecution(createEmptyPythonExecution());
+      setBottomPanelMode("terminal");
+      setMobilePane("editor");
+      setSidebarMode("explorer");
+      setFileSearchQuery("");
+      setOpenFiles([filename]);
+      setFiles([createFileRecord(filename, code)]);
+      setActiveFile(filename);
+      setActiveWorkspace(sharedWorkspaceName);
+      terminalRef.current?.writeln(
+        `\x1b[36m[Share] Loaded ${filename} into ${sharedWorkspaceName}\x1b[0m`,
+      );
+      publishShareStatus("Loaded", "success");
+      clearSharedPayloadHash();
+      setShareHashSignal((value) => value + 1);
+    };
+
+    importSharedPayload().catch((error) => {
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      reportWorkspaceError(`[WasmForge] Shared link import failed: ${error.message || error}`);
+      publishShareStatus("Invalid link", "error");
+      clearSharedPayloadHash();
+      setShareHashSignal((value) => value + 1);
+    });
+  }, [
+    clearRecoveryWrite,
+    createWorkspace,
+    isJsRunning,
+    isIOWorkerReady,
+    isRunning,
+    isSqlRunning,
+    listWorkspaces,
+    prepareWorkspaceMutation,
+    publishShareStatus,
+    reportWorkspaceError,
+    shareHashSignal,
+    workspaceBootstrapped,
+    writeFile,
+  ]);
+
   const handleWorkspaceSelect = useCallback(async (workspaceName) => {
     if (workspaceName === activeWorkspaceRef.current) {
       return;
@@ -1627,6 +1929,7 @@ export default function App({ onNavigateHome }) {
     isAwaitingInput,
   );
   const currentLanguageLabel = getRuntimeLanguageLabel(activeRuntime, activeFile);
+  const shareButtonDisabled = !activeFile;
 
   useEffect(() => {
     setBottomPanelMode(showSqlResultsPanel ? "output" : "terminal");
@@ -2050,12 +2353,27 @@ export default function App({ onNavigateHome }) {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "flex-end",
+                gap: "8px",
                 padding: "0 12px",
                 flexShrink: 0,
                 borderLeft: "1px solid var(--ide-shell-border)",
                 background: "var(--ide-shell-subtle)",
               }}
             >
+              <button
+                type="button"
+                aria-label="Copy share link"
+                title="Copy share link"
+                onClick={handleShareLink}
+                disabled={shareButtonDisabled}
+                style={shareButtonStyle({
+                  disabled: shareButtonDisabled,
+                  tone: shareStatus.tone,
+                })}
+              >
+                <ShareIcon />
+                <span>{shareStatus.label}</span>
+              </button>
               <button
                 type="button"
                 onClick={handleRun}
@@ -2135,6 +2453,17 @@ export default function App({ onNavigateHome }) {
                 {mobileHeaderTitle}
                 <span style={{ color: "var(--ide-shell-muted)" }}> — {activeWorkspace}</span>
               </div>
+            </button>
+
+            <button
+              type="button"
+              aria-label="Copy share link"
+              title="Copy share link"
+              onClick={handleShareLink}
+              disabled={shareButtonDisabled}
+              style={mobileTopButtonStyle(shareStatus.tone === "success")}
+            >
+              <ShareIcon />
             </button>
 
             <button
@@ -2901,6 +3230,16 @@ function SearchIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M10.75 3.5h2v2" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.5 7.5 12.75 3.25" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+      <path d="M12 8.5v2.25a1 1 0 0 1-1 1H4.75a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1H7" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function MenuIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3049,6 +3388,46 @@ function runButtonStyle(disabled = false) {
     fontSize: "12px",
     fontWeight: 700,
     letterSpacing: "0.05em",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.82 : 1,
+  };
+}
+
+function shareButtonStyle({ disabled = false, tone = "idle" } = {}) {
+  const isSuccess = tone === "success";
+  const isError = tone === "error";
+
+  return {
+    height: "28px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "7px",
+    padding: "0 12px",
+    borderRadius: "3px",
+    border: disabled
+      ? "1px solid var(--ide-shell-border-strong)"
+      : isSuccess
+        ? "1px solid color-mix(in srgb, var(--ide-shell-success) 36%, transparent)"
+        : isError
+          ? "1px solid color-mix(in srgb, var(--ide-shell-danger) 32%, transparent)"
+          : "1px solid color-mix(in srgb, var(--ide-shell-border-strong) 46%, transparent)",
+    background: disabled
+      ? "var(--ide-shell-panel)"
+      : isSuccess
+        ? "color-mix(in srgb, var(--ide-shell-success) 18%, var(--ide-shell-panel))"
+        : isError
+          ? "color-mix(in srgb, var(--ide-shell-danger) 12%, var(--ide-shell-panel))"
+          : "var(--ide-shell-panel)",
+    color: disabled
+      ? "var(--ide-shell-muted-strong)"
+      : isSuccess
+        ? "var(--ide-shell-success)"
+        : isError
+          ? "var(--ide-shell-danger)"
+          : "var(--ide-shell-text)",
+    fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "0.04em",
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.82 : 1,
   };
