@@ -118,6 +118,34 @@ async function verifyPython(page) {
   await verifyPythonExecutionProof(page);
 }
 
+async function verifyPythonMultiFileImports(page) {
+  await createFile(page, "helper_module.py");
+  await setEditorValue(
+    page,
+    'import numpy as np\n\n\ndef describe(name):\n    return f"import-ok v1 {name} {int(np.arange(4).sum())}"\n',
+  );
+
+  await createFile(page, "imports_main.py");
+  await setEditorValue(
+    page,
+    'from helper_module import describe\n\nprint(describe("alpha"))\n',
+  );
+
+  await clickRun(page);
+  await waitForTerminalText(page, "import-ok v1 alpha 6");
+
+  await page.getByText("helper_module.py", { exact: true }).first().click();
+  await setEditorValue(
+    page,
+    'import numpy as np\n\n\ndef describe(name):\n    return f"import-ok v2 {name} {int(np.arange(5).sum())}"\n',
+  );
+
+  await page.getByText("imports_main.py", { exact: true }).first().click();
+  await clickRun(page);
+  await waitForTerminalText(page, "import-ok v2 alpha 10");
+  await waitForTerminalText(page, "[Local runtime] Executed on this device in ");
+}
+
 async function verifyJavaScript(page) {
   await createFile(page, "verify.js");
   await setEditorValue(page, 'console.log("js-ok");\nsetTimeout(() => console.log("js-async"), 20);\n');
@@ -196,6 +224,7 @@ async function main() {
     await page.waitForTimeout(1500);
     await ensureVerificationWorkspace(page);
     await verifyPython(page);
+    await verifyPythonMultiFileImports(page);
     await verifyJavaScript(page);
     await verifyTypeScript(page);
     await verifyMatplotlib(page);
@@ -214,6 +243,7 @@ async function main() {
       workspace: verificationWorkspace,
       python: "ok",
       pythonExecutionProof: "ok",
+      pythonMultiFileImports: "ok",
       javascript: "ok",
       typescript: "ok",
       matplotlib: "ok",

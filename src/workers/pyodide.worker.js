@@ -261,6 +261,44 @@ async function ensureLocalPackages(code, filename = 'main.py') {
   }
 }
 
+async function resetWorkspaceImportState() {
+  await pyodide.runPythonAsync(`
+import importlib
+import os
+import sys
+
+workspace_root = os.path.abspath("/workspace")
+workspace_prefix = workspace_root + os.sep
+
+importlib.invalidate_caches()
+
+for module_name, module in list(sys.modules.items()):
+    module_file = getattr(module, "__file__", None)
+    if not module_file:
+        continue
+
+    try:
+        module_path = os.path.abspath(module_file)
+    except Exception:
+        continue
+
+    if module_path == workspace_root or module_path.startswith(workspace_prefix):
+        sys.modules.pop(module_name, None)
+
+for cache_key in list(sys.path_importer_cache.keys()):
+    if not isinstance(cache_key, str):
+        continue
+
+    try:
+        cache_path = os.path.abspath(cache_key)
+    except Exception:
+        continue
+
+    if cache_path == workspace_root or cache_path.startswith(workspace_prefix):
+        sys.path_importer_cache.pop(cache_key, None)
+  `)
+}
+
 async function configureMatplotlibBackend() {
   await pyodide.runPythonAsync(`
 try:
@@ -422,6 +460,8 @@ async function runPython(code, filename = 'main.py') {
 
     const packageState = await ensureLocalPackages(code, filename)
     usesMatplotlib = packageState.usesMatplotlib
+
+    await resetWorkspaceImportState()
 
     if (usesMatplotlib) {
       await configureMatplotlibBackend()

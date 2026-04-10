@@ -192,10 +192,16 @@ async function readIsolationState(page) {
 
 async function verifyOfflinePythonFlow(page) {
   await showTerminal(page);
+  await createFile(page, "offline_helper.py");
+  await setEditorValue(
+    page,
+    'import numpy as np\n\n\ndef describe(name):\n    return f"offline-ok {int(np.arange(3).sum())} {name}"\n',
+  );
+
   await createFile(page, "offline.py");
   await setEditorValue(
     page,
-    'import numpy as np\nname = input("Name: ")\nprint(f"offline-ok {int(np.arange(3).sum())} {name}")\n',
+    'from offline_helper import describe\n\nname = input("Name: ")\nprint(describe(name))\n',
   );
 
   await page.context().setOffline(true);
@@ -408,6 +414,7 @@ async function main() {
     await verifyOfflinePythonFlow(page);
     report.offlinePython = "ok";
     report.pythonExecutionProof = "ok";
+    report.pythonMultiFileImports = "ok";
 
     await verifyMatplotlibOfflineFlow(page);
     report.offlineMatplotlib = "ok";
