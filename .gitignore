@@ -4,7 +4,11 @@ dev-dist/
 artifacts/
 dev.log
 dev.err.log
+dev-*.log
+preview*.log
 .env
 .env.local
 *.local
 .DS_Store
+WasmForge_WhatToBuild.md
+wasmforge-v3.html

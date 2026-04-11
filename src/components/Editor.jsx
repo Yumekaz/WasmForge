@@ -177,11 +177,13 @@ function persistDraft(filename, content, storageKey = DEFAULT_RECOVERY_STORAGE_K
 function Editor({
   code,
   filename,
+  modelPath = filename,
   onChange,
   onMount,
   language = 'python',
   readOnly = false,
   draftStorageKey = DEFAULT_RECOVERY_STORAGE_KEY,
+  persistDrafts = true,
   themeMode = 'night',
 }) {
   const editorRef = useRef(null)
@@ -202,12 +204,16 @@ function Editor({
   const handleMount = useCallback((editor, monaco) => {
     editorRef.current = editor
     modelChangeDisposableRef.current?.dispose()
-    modelChangeDisposableRef.current = editor.onDidChangeModelContent(() => {
-      persistDraft(filenameRef.current, editor.getValue(), draftStorageKey)
-    })
+    if (persistDrafts) {
+      modelChangeDisposableRef.current = editor.onDidChangeModelContent(() => {
+        persistDraft(filenameRef.current, editor.getValue(), draftStorageKey)
+      })
+    } else {
+      modelChangeDisposableRef.current = null
+    }
 
     onMount?.(editor, monaco)
-  }, [draftStorageKey, onMount])
+  }, [draftStorageKey, onMount, persistDrafts])
 
   const handleBeforeMount = useCallback((monaco) => {
     defineWasmForgeTheme(monaco)
@@ -217,16 +223,18 @@ function Editor({
     <MonacoEditor
       height="100%"
       language={language}
-      path={filename}
       value={code}
       onChange={(val) => {
         const nextValue = val ?? ''
-        persistDraft(filenameRef.current, nextValue, draftStorageKey)
+        if (persistDrafts) {
+          persistDraft(filenameRef.current, nextValue, draftStorageKey)
+        }
         onChange?.(nextValue)
       }}
       beforeMount={handleBeforeMount}
       onMount={handleMount}
       theme={themeMode === 'day' ? WASMFORGE_EDITOR_THEME_DAY : WASMFORGE_EDITOR_THEME}
+      path={modelPath}
       options={{
         fontSize: 14,
         lineHeight: 23,

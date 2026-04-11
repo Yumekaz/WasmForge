@@ -11,6 +11,9 @@ let stdinBytesView = null
 let baseUrl = '/'
 let activeWorkspaceName = 'python-experiments'
 let initializationPromise = null
+let activeExecutionMode = 'script'
+let notebookStdoutBuffer = ''
+let notebookStderrBuffer = ''
 const textDecoder = new TextDecoder()
 const STDIN_SIGNAL_INDEX = 0
 const STDIN_LENGTH_INDEX = 1
@@ -40,6 +43,11 @@ function collectRequestedPackages(source = '') {
   }
 
   return packages
+}
+
+function resetNotebookBuffers() {
+  notebookStdoutBuffer = ''
+  notebookStderrBuffer = ''
 }
 
 function flushBufferedOutput() {
@@ -402,6 +410,22 @@ result
   }
 }
 
+async function resetNotebookPythonSession(notebookKey, filename = 'notebook.wfnb') {
+  await mountWorkspace()
+  await syncWorkspaceFromOpfs()
+  await resetWorkspaceImportState()
+  await resetStructuredOutputs()
+  await resetMatplotlibState()
+  await pyodide.runPythonAsync(`
+import builtins
+
+builtins._wasmforge_reset_notebook_session(
+    ${JSON.stringify(notebookKey)},
+    ${JSON.stringify(`/workspace/${filename}`)},
+)
+  `)
+}
+
 async function initPyodide() {
   try {
     const { indexURL, scriptURL, lockFileURL } = getPyodideAssetUrls()
@@ -418,8 +442,18 @@ async function initPyodide() {
     })
 
     // Expose JS callbacks before overriding Python streams.
-    pyodide.globals.set('postStdout', (s) => { stdoutBuffer += s })
-    pyodide.globals.set('postStderr', (s) => { stderrBuffer += s })
+    pyodide.globals.set('postStdout', (s) => {
+      stdoutBuffer += s
+      if (activeExecutionMode === 'notebook') {
+        notebookStdoutBuffer += s
+      }
+    })
+    pyodide.globals.set('postStderr', (s) => {
+      stderrBuffer += s
+      if (activeExecutionMode === 'notebook') {
+        notebookStderrBuffer += s
+      }
+    })
     pyodide.globals.set('_wasmforgeStdin', stdinHandler)
 
     // Override sys.stdout and sys.stderr to capture Python output
@@ -430,6 +464,7 @@ import math
 import sys
 
 builtins._wasmforge_display_payloads = []
+builtins._wasmforge_notebook_sessions = {}
 
 class _WasmForgeStdout:
     def write(self, s):
@@ -549,12 +584,44 @@ def _wasmforge_collect_displays():
     builtins._wasmforge_display_payloads.clear()
     return payload
 
+def _wasmforge_create_notebook_namespace(filename=""):
+    namespace = {
+        "__name__": "__main__",
+        "__package__": None,
+        "__builtins__": builtins.__dict__,
+    }
+    if filename:
+        namespace["__file__"] = filename
+    return namespace
+
+def _wasmforge_reset_notebook_session(session_key, filename=""):
+    namespace = _wasmforge_create_notebook_namespace(filename)
+    builtins._wasmforge_notebook_sessions[session_key] = namespace
+    return namespace
+
+def _wasmforge_get_notebook_session(session_key, filename=""):
+    namespace = builtins._wasmforge_notebook_sessions.get(session_key)
+    if namespace is None:
+        namespace = _wasmforge_reset_notebook_session(session_key, filename)
+    if filename:
+        namespace["__file__"] = filename
+    namespace["__name__"] = "__main__"
+    namespace["__package__"] = None
+    return namespace
+
+def _wasmforge_run_notebook_cell(source, session_key, filename="", cell_label="Cell"):
+    namespace = _wasmforge_get_notebook_session(session_key, filename)
+    compiled = compile(source, f"{filename or '<notebook>'}::{cell_label}", "exec")
+    exec(compiled, namespace, namespace)
+
 sys.stdout = _WasmForgeStdout()
 sys.stderr = _WasmForgeStderr()
 builtins.input = _wasmforge_input
 builtins.display = _wasmforge_display
 builtins._wasmforge_reset_displays = _wasmforge_reset_displays
 builtins._wasmforge_collect_displays = _wasmforge_collect_displays
+builtins._wasmforge_reset_notebook_session = _wasmforge_reset_notebook_session
+builtins._wasmforge_run_notebook_cell = _wasmforge_run_notebook_cell
     `)
 
     self.postMessage({ type: 'load_progress', msg: 'Loading standard Python packages...' })
@@ -583,6 +650,8 @@ async function runPython(code, filename = 'main.py') {
 
   stopHeartbeat()
   stopFlushInterval()
+  activeExecutionMode = 'script'
+  resetNotebookBuffers()
   sendHeartbeat()
   startHeartbeat()
   startFlushInterval()
@@ -657,6 +726,7 @@ runpy.run_path(${JSON.stringify(workspacePath)}, run_name="__main__")
 
     stopHeartbeat()
     stopFlushInterval()
+    activeExecutionMode = 'script'
     self.postMessage({
       type: 'done',
       error,
@@ -665,11 +735,132 @@ runpy.run_path(${JSON.stringify(workspacePath)}, run_name="__main__")
   }
 }
 
+async function runNotebookCell({
+  notebookKey,
+  code,
+  filename = 'notebook.wfnb',
+  cellId = 'cell',
+} = {}) {
+  if (initializationPromise) {
+    await initializationPromise
+  }
+
+  if (!pyodide) {
+    self.postMessage({ type: 'stderr', data: '[WasmForge] Python is still loading. Please wait.\n' })
+    self.postMessage({
+      type: 'notebook_cell_done',
+      cellId,
+      error: 'Runtime not ready',
+      stdout: '',
+      stderr: '[WasmForge] Python is still loading. Please wait.\n',
+      figures: [],
+      tables: [],
+      durationMs: null,
+    })
+    return
+  }
+
+  stopHeartbeat()
+  stopFlushInterval()
+  activeExecutionMode = 'notebook'
+  resetNotebookBuffers()
+  sendHeartbeat()
+  startHeartbeat()
+  startFlushInterval()
+
+  let error = null
+  const startedAt = performance.now()
+  let usesMatplotlib = false
+
+  try {
+    await mountWorkspace()
+    await syncWorkspaceFromOpfs()
+
+    const packageState = await ensureLocalPackages(code, filename)
+    usesMatplotlib = packageState.usesMatplotlib
+
+    await resetWorkspaceImportState()
+    await resetStructuredOutputs()
+    await resetMatplotlibState()
+
+    if (usesMatplotlib) {
+      await configureMatplotlibBackend()
+    }
+
+    await pyodide.runPythonAsync(`
+import builtins
+
+builtins._wasmforge_run_notebook_cell(
+    ${JSON.stringify(code)},
+    ${JSON.stringify(notebookKey)},
+    ${JSON.stringify(`/workspace/${filename}`)},
+    ${JSON.stringify(cellId)},
+)
+    `)
+  } catch (err) {
+    const errorMsg = normalizeErrorMessage(err).trim()
+    if (errorMsg) {
+      stderrBuffer += `\n${errorMsg}\n`
+      notebookStderrBuffer += `\n${errorMsg}\n`
+    }
+    error = errorMsg || 'Python notebook execution failed'
+  } finally {
+    let tables = []
+    let figures = []
+
+    try {
+      tables = await collectTabularOutputs()
+    } catch (tableErr) {
+      const tableMessage = `[WasmForge] Failed to capture pandas output: ${tableErr.message || tableErr}\n`
+      stderrBuffer += `\n${tableMessage}`
+      notebookStderrBuffer += `\n${tableMessage}`
+      error ||= tableMessage.trim()
+    }
+
+    try {
+      figures = await collectMatplotlibFigures()
+    } catch (figureErr) {
+      const figureMessage = `[WasmForge] Failed to render Matplotlib output: ${figureErr.message || figureErr}\n`
+      stderrBuffer += `\n${figureMessage}`
+      notebookStderrBuffer += `\n${figureMessage}`
+      error ||= figureMessage.trim()
+    }
+
+    try {
+      await persistWorkspaceToOpfs()
+    } catch (syncErr) {
+      const syncMessage = `[WasmForge] Failed to sync workspace: ${syncErr.message || syncErr}\n`
+      stderrBuffer += `\n${syncMessage}`
+      notebookStderrBuffer += `\n${syncMessage}`
+      error ||= syncMessage.trim()
+    }
+
+    stopHeartbeat()
+    stopFlushInterval()
+    activeExecutionMode = 'script'
+
+    self.postMessage({
+      type: 'notebook_cell_done',
+      cellId,
+      error,
+      stdout: notebookStdoutBuffer,
+      stderr: notebookStderrBuffer,
+      tables,
+      figures,
+      durationMs: performance.now() - startedAt,
+    })
+
+    resetNotebookBuffers()
+  }
+}
+
 self.onmessage = async (event) => {
   const {
     type,
     code,
     filename,
+    notebookKey,
+    cellId,
     stdinBuffer: incomingStdinBuffer,
     baseUrl: incomingBaseUrl,
     workspaceName,
@@ -688,9 +879,50 @@ self.onmessage = async (event) => {
       await runPython(code, filename)
       break
 
+    case 'run_notebook_cell':
+      await runNotebookCell({
+        notebookKey,
+        code,
+        filename,
+        cellId,
+      })
+      break
+
+    case 'reset_notebook_session':
+      try {
+        if (initializationPromise) {
+          await initializationPromise
+        }
+
+        if (!pyodide) {
+          throw new Error('Runtime not ready')
+        }
+
+        stopHeartbeat()
+        stopFlushInterval()
+        activeExecutionMode = 'script'
+        resetNotebookBuffers()
+        sendHeartbeat()
+        startHeartbeat()
+        startFlushInterval()
+        await resetNotebookPythonSession(notebookKey, filename)
+        stopHeartbeat()
+        stopFlushInterval()
+        self.postMessage({ type: 'notebook_session_reset', error: '' })
+      } catch (err) {
+        const error = normalizeErrorMessage(err).trim() || 'Failed to reset notebook session'
+        stderrBuffer += `\n${error}\n`
+        stopHeartbeat()
+        stopFlushInterval()
+        self.postMessage({ type: 'notebook_session_reset', error })
+      }
+      break
+
     case 'kill':
       stopHeartbeat()
       stopFlushInterval()
+      activeExecutionMode = 'script'
+      resetNotebookBuffers()
       self.postMessage({ type: 'done', error: 'Execution killed by user' })
       break
 

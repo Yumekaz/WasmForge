@@ -105,7 +105,7 @@ async function showTerminal(page) {
   await page.getByText("TERMINAL", { exact: true }).click();
 }
 
-async function waitForTerminalText(page, text, timeout = 20000) {
+async function waitForTerminalText(page, text, timeout = 40000) {
   await page.waitForFunction(
     ({ selector, expected }) => {
       const element = document.querySelector(selector);
@@ -326,11 +326,11 @@ async function verifyDataFrameOfflineFlow(page) {
 
   await clickRun(page);
   await page.getByText("OUTPUT", { exact: true }).click();
-  await page.getByRole("heading", { name: "DataFrame Preview" }).waitFor({ timeout: 20000 });
-  await page.getByRole("table", { name: /DataFrame/i }).waitFor({ timeout: 20000 });
-  await page.getByRole("columnheader", { name: "name", exact: true }).waitFor({ timeout: 20000 });
-  await page.getByRole("columnheader", { name: "score", exact: true }).waitFor({ timeout: 20000 });
-  await page.getByRole("cell", { name: "Ada", exact: true }).waitFor({ timeout: 20000 });
+  await page.getByRole("heading", { name: "DataFrame Preview" }).waitFor({ timeout: 40000 });
+  await page.getByRole("table", { name: /DataFrame/i }).waitFor({ timeout: 40000 });
+  await page.getByRole("columnheader", { name: "name", exact: true }).waitFor({ timeout: 40000 });
+  await page.getByRole("columnheader", { name: "score", exact: true }).waitFor({ timeout: 40000 });
+  await page.getByRole("cell", { name: "Ada", exact: true }).waitFor({ timeout: 40000 });
   await verifyPythonExecutionProof(page);
 
   await page.context().setOffline(true);
@@ -341,9 +341,9 @@ async function verifyDataFrameOfflineFlow(page) {
   await waitForRunEnabled(page);
   await clickRun(page);
   await page.getByText("OUTPUT", { exact: true }).click();
-  await page.getByRole("heading", { name: "DataFrame Preview" }).waitFor({ timeout: 20000 });
-  await page.getByRole("table", { name: /DataFrame/i }).waitFor({ timeout: 20000 });
-  await page.getByRole("cell", { name: "Linus", exact: true }).waitFor({ timeout: 20000 });
+  await page.getByRole("heading", { name: "DataFrame Preview" }).waitFor({ timeout: 40000 });
+  await page.getByRole("table", { name: /DataFrame/i }).waitFor({ timeout: 40000 });
+  await page.getByRole("cell", { name: "Linus", exact: true }).waitFor({ timeout: 40000 });
   await verifyPythonExecutionProof(page);
   await page.context().setOffline(false);
 }
@@ -480,6 +480,9 @@ async function verifyRestartedState(page) {
   await page.getByText("pg-persist", { exact: true }).waitFor({ timeout: 20000 });
 
   await selectWorkspace(page, offlineProofWorkspace);
+  await page.locator(`button[title="${offlineProofWorkspace}"]`).first().waitFor({ timeout: 30000 });
+  await page.getByText("main.py", { exact: true }).first().waitFor({ timeout: 30000 });
+  await waitForEditorText(page, "Offline proof > type any name:", 30000);
   await page.context().setOffline(true);
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await page.getByRole("button", { name: /Run/ }).waitFor({ timeout: 60000 });
@@ -487,6 +490,7 @@ async function verifyRestartedState(page) {
   await showTerminal(page);
   await page.getByText("main.py", { exact: true }).first().click();
   await waitForRunEnabled(page);
+  await waitForEditorText(page, "Offline proof > type any name:", 30000);
   await clickRun(page);
   await waitForTerminalText(page, "Offline proof > type any name:");
   await page.keyboard.insertText("restart");

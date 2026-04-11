@@ -36,6 +36,8 @@ export function usePyodideWorker({
   const stdinBufferRef = useRef(null)
   const stdinSignalViewRef = useRef(null)
   const stdinBytesViewRef = useRef(null)
+  const pendingNotebookRunRef = useRef(null)
+  const pendingNotebookResetRef = useRef(null)
   const onStdoutRef = useRef(onStdout)
   const onStderrRef = useRef(onStderr)
   const onFiguresRef = useRef(onFigures)
@@ -48,6 +50,42 @@ export function usePyodideWorker({
   const [isRunning, setIsRunning] = useState(false)
   const [isAwaitingInput, setIsAwaitingInput] = useState(false)
   const [stdinSupported] = useState(() => canUseSharedStdin())
+
+  const resolvePendingNotebookRun = useCallback((result = {}) => {
+    if (!pendingNotebookRunRef.current) {
+      return
+    }
+
+    pendingNotebookRunRef.current.resolve({
+      cellId: result.cellId || pendingNotebookRunRef.current.cellId,
+      error: result.error || '',
+      stdout: result.stdout || '',
+      stderr: result.stderr || '',
+      durationMs: result.durationMs ?? null,
+      figures: Array.isArray(result.figures) ? result.figures : [],
+      tables: Array.isArray(result.tables) ? result.tables : [],
+    })
+    pendingNotebookRunRef.current = null
+  }, [])
+
+  const resolvePendingNotebookReset = useCallback((result = {}) => {
+    if (!pendingNotebookResetRef.current) {
+      return
+    }
+
+    pendingNotebookResetRef.current.resolve({
+      error: result.error || '',
+    })
+    pendingNotebookResetRef.current = null
+  }, [])
+
+  const settlePendingNotebookActions = useCallback((errorMessage = '') => {
+    resolvePendingNotebookRun({
+      error: errorMessage,
+      stderr: errorMessage ? `${errorMessage}\n` : '',
+    })
+    resolvePendingNotebookReset({ error: errorMessage })
+  }, [resolvePendingNotebookReset, resolvePendingNotebookRun])
 
   useEffect(() => {
     onStdoutRef.current = onStdout
@@ -130,12 +168,13 @@ export function usePyodideWorker({
 
       setIsReady(false)
       setIsRunning(false)
+      settlePendingNotebookActions('Timeout: infinite loop killed')
       onDoneRef.current?.({ error: 'Timeout: infinite loop killed' })
 
       // Respawn clean worker automatically.
       spawnWorkerRef.current?.()
     }, HEARTBEAT_TIMEOUT_MS)
-  }, [clearWatchdog])
+  }, [clearWatchdog, settlePendingNotebookActions])
 
   const spawnWorker = useCallback(() => {
     clearWatchdog()
@@ -155,7 +194,19 @@ export function usePyodideWorker({
     )
 
     worker.onmessage = (event) => {
-      const { type, data, msg, error, prompt, figures, tables, durationMs } = event.data
+      const {
+        type,
+        data,
+        msg,
+        error,
+        prompt,
+        figures,
+        tables,
+        durationMs,
+        stdout,
+        stderr,
+        cellId,
+      } = event.data
 
       switch (type) {
         case 'ready':
@@ -210,6 +261,30 @@ export function usePyodideWorker({
           onDoneRef.current?.({ error, durationMs })
           break
 
+        case 'notebook_cell_done':
+          clearWatchdog()
+          awaitingInputRef.current = false
+          setIsAwaitingInput(false)
+          setIsRunning(false)
+          resolvePendingNotebookRun({
+            cellId,
+            error,
+            stdout,
+            stderr,
+            durationMs,
+            figures,
+            tables,
+          })
+          break
+
+        case 'notebook_session_reset':
+          clearWatchdog()
+          awaitingInputRef.current = false
+          setIsAwaitingInput(false)
+          setIsRunning(false)
+          resolvePendingNotebookReset({ error })
+          break
+
         default:
           break
       }
@@ -223,6 +298,7 @@ export function usePyodideWorker({
       setIsAwaitingInput(false)
       setIsReady(false)
       setIsRunning(false)
+      settlePendingNotebookActions(`[WasmForge] Worker crashed: ${err.message}`)
       spawnWorkerRef.current?.()
     }
 
@@ -233,7 +309,7 @@ export function usePyodideWorker({
       stdinBuffer: createStdinChannel(),
       workspaceName,
     })
-  }, [clearWatchdog, createStdinChannel, resetWatchdog, stdinSupported, workspaceName])
+  }, [clearWatchdog, createStdinChannel, resetWatchdog, resolvePendingNotebookReset, resolvePendingNotebookRun, settlePendingNotebookActions, stdinSupported, workspaceName])
 
   spawnWorkerRef.current = spawnWorker
 
@@ -310,9 +386,66 @@ export function usePyodideWorker({
     onStderrRef.current?.('\n[WasmForge] Execution killed by user.\n')
     setIsReady(false)
     setIsRunning(false)
+    settlePendingNotebookActions('Killed by user')
     onDoneRef.current?.({ error: 'Killed by user' })
     spawnWorkerRef.current?.()
-  }, [clearWatchdog])
+  }, [clearWatchdog, settlePendingNotebookActions])
+
+  const resetNotebookSession = useCallback(({ notebookKey, filename }) => {
+    if (!workerRef.current || !isReady) {
+      onStderrRef.current?.('[WasmForge] Runtime not ready yet. Please wait...\n')
+      return Promise.resolve({ error: 'Runtime not ready' })
+    }
+
+    if (isRunning || pendingNotebookResetRef.current) {
+      onStderrRef.current?.('[WasmForge] Already running. Kill the current execution first.\n')
+      return Promise.resolve({ error: 'Already running' })
+    }
+
+    clearStdinSignal()
+    awaitingInputRef.current = false
+    setIsAwaitingInput(false)
+    setIsRunning(true)
+    resetWatchdog()
+
+    return new Promise((resolve) => {
+      pendingNotebookResetRef.current = { resolve, notebookKey }
+      workerRef.current.postMessage({
+        type: 'reset_notebook_session',
+        notebookKey,
+        filename,
+      })
+    })
+  }, [clearStdinSignal, isReady, isRunning, resetWatchdog])
+
+  const runNotebookCell = useCallback(({ notebookKey, filename, cellId, code }) => {
+    if (!workerRef.current || !isReady) {
+      onStderrRef.current?.('[WasmForge] Runtime not ready yet. Please wait...\n')
+      return Promise.resolve({ error: 'Runtime not ready', cellId })
+    }
+
+    if (isRunning || pendingNotebookRunRef.current) {
+      onStderrRef.current?.('[WasmForge] Already running. Kill the current execution first.\n')
+      return Promise.resolve({ error: 'Already running', cellId })
+    }
+
+    clearStdinSignal()
+    awaitingInputRef.current = false
+    setIsAwaitingInput(false)
+    setIsRunning(true)
+    resetWatchdog()
+
+    return new Promise((resolve) => {
+      pendingNotebookRunRef.current = { resolve, notebookKey, cellId }
+      workerRef.current.postMessage({
+        type: 'run_notebook_cell',
+        notebookKey,
+        filename,
+        cellId,
+        code,
+      })
+    })
+  }, [clearStdinSignal, isReady, isRunning, resetWatchdog])
 
   useEffect(() => {
     spawnWorker()
@@ -327,6 +460,8 @@ export function usePyodideWorker({
 
   return {
     runCode,
+    runNotebookCell,
+    resetNotebookSession,
     submitStdin,
     killWorker,
     isReady,

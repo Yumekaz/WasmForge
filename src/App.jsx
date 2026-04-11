@@ -4,6 +4,7 @@ import FileTree from "./components/FileTree.jsx";
 import SqlResultsPanel from "./components/SqlResultsPanel.jsx";
 import PythonOutputPanel from "./components/PythonOutputPanel.jsx";
 import OfflineProofPanel from "./components/OfflineProofPanel.jsx";
+import PythonNotebook from "./components/PythonNotebook.jsx";
 import { usePyodideWorker } from "./hooks/usePyodideWorker.js";
 import { useIOWorker } from "./hooks/useIOWorker.js";
 import { useJsWorker } from "./hooks/useJsWorker.js";
@@ -17,6 +18,13 @@ import {
   getRuntimeKind,
   getSqlDatabaseDescriptor,
 } from "./utils/sqlRuntime.js";
+import {
+  createDefaultPythonNotebookDocument,
+  createNotebookCell,
+  isPythonNotebookFile,
+  parsePythonNotebookDocument,
+  serializePythonNotebookDocument,
+} from "./utils/pythonNotebook.js";
 import { persistAppTheme, readStoredAppTheme } from "./constants/theme.js";
 
 const DEFAULT_FILENAME = "main.py";
@@ -208,6 +216,10 @@ function getIdeCssVars(palette) {
 }
 
 function getLanguage(filename) {
+  if (isPythonNotebookFile(filename)) {
+    return "json";
+  }
+
   const ext = getFileExtension(filename);
   switch (ext) {
     case "py":
@@ -494,6 +506,37 @@ function createEmptyPythonExecution() {
   };
 }
 
+function createEmptyNotebookState() {
+  return {
+    cellResults: {},
+    runningCellId: "",
+    runAllInProgress: false,
+  };
+}
+
+function createNotebookFileContent() {
+  return serializePythonNotebookDocument(createDefaultPythonNotebookDocument());
+}
+
+function getNotebookSessionKey(workspaceName, filename) {
+  return `${workspaceName}::${filename}`;
+}
+
+function createNotebookFilename(existingFiles = []) {
+  const existingNames = new Set(existingFiles.map((file) => file.name));
+
+  if (!existingNames.has("analysis.wfnb")) {
+    return "analysis.wfnb";
+  }
+
+  let index = 2;
+  while (existingNames.has(`analysis-${index}.wfnb`)) {
+    index += 1;
+  }
+
+  return `analysis-${index}.wfnb`;
+}
+
 function createInitialOfflineProofState() {
   return {
     checking: false,
@@ -665,7 +708,7 @@ function clampEditorPaneHeight(height, containerHeight) {
 function getRuntimeLanguageLabel(runtime, filename = "") {
   switch (runtime) {
     case "python":
-      return "Python 3.13";
+      return isPythonNotebookFile(filename) ? "Python Notebook" : "Python 3.13";
     case "javascript":
       return getFileExtension(filename) === "ts" ? "TypeScript" : "JavaScript";
     case "sqlite":
@@ -717,6 +760,8 @@ export default function App({ onNavigateHome }) {
   const [status, setStatus] = useState("Loading workspace...");
   const [sqlExecution, setSqlExecution] = useState(createEmptySqlExecution);
   const [pythonExecution, setPythonExecution] = useState(createEmptyPythonExecution);
+  const [notebookStateByFile, setNotebookStateByFile] = useState({});
+  const [notebookSelectionByFile, setNotebookSelectionByFile] = useState({});
   const [workspaces, setWorkspaces] = useState([]);
   const [activeWorkspace, setActiveWorkspace] = useState(readPersistedActiveWorkspace);
   const [workspaceBootstrapped, setWorkspaceBootstrapped] = useState(false);
@@ -1062,13 +1107,21 @@ export default function App({ onNavigateHome }) {
       return null;
     }
 
-    const liveEditorValue = editorRef.current?.getValue();
     const fallbackFile = files.find((file) => file.name === filename);
+    if (isPythonNotebookFile(filename)) {
+      return {
+        filename,
+        content: fallbackFile?.content ?? "",
+      };
+    }
+
+    const editorFilename = getEditorFilename(editorRef.current);
+    const liveEditorValue = editorFilename === filename ? editorRef.current?.getValue() : null;
     return {
       filename,
       content: liveEditorValue ?? fallbackFile?.content ?? "",
     };
-  }, [files]);
+  }, [files, getEditorFilename]);
 
   const {
     isReady: isIOWorkerReady,
@@ -1315,6 +1368,8 @@ export default function App({ onNavigateHome }) {
 
   const {
     runCode,
+    runNotebookCell: runNotebookCellInWorker,
+    resetNotebookSession: resetNotebookSessionInWorker,
     submitStdin,
     killWorker,
     isReady,
@@ -1402,6 +1457,11 @@ export default function App({ onNavigateHome }) {
   useEffect(() => {
     submitStdinRef.current = submitStdin;
   }, [submitStdin]);
+
+  useEffect(() => {
+    setNotebookStateByFile({});
+    setNotebookSelectionByFile({});
+  }, [activeWorkspace]);
 
   const {
     runCode: runJsCode,
@@ -1895,6 +1955,172 @@ export default function App({ onNavigateHome }) {
     killWorker();
   }, [killJsWorker, killSqlWorker, killWorker]);
 
+  const resetNotebookKernel = useCallback(async (filename, options = {}) => {
+    const {
+      announce = true,
+      clearOutputs = true,
+    } = options;
+    const notebookKey = getNotebookSessionKey(activeWorkspaceRef.current, filename);
+
+    await flushAllWrites();
+    setStatus("Restarting notebook session...");
+
+    if (clearOutputs) {
+      setNotebookStateByFile((prev) => ({
+        ...prev,
+        [filename]: {
+          ...(prev[filename] || createEmptyNotebookState()),
+          cellResults: {},
+          runningCellId: "",
+          runAllInProgress: false,
+        },
+      }));
+    }
+
+    if (announce) {
+      terminalRef.current?.writeln(`\x1b[90m[Notebook] Restarting Python session for ${filename}...\x1b[0m`);
+    }
+
+    const resetResult = await resetNotebookSessionInWorker({
+      notebookKey,
+      filename,
+    });
+
+    if (resetResult?.error) {
+      setStatus("Error");
+      terminalRef.current?.writeln(`\x1b[31m[Notebook] ${resetResult.error}\x1b[0m`);
+      return resetResult;
+    }
+
+    setStatus("Python notebook ready");
+    terminalRef.current?.writeln(`\x1b[32m[Notebook] Python session ready for ${filename}\x1b[0m`);
+    return { error: "" };
+  }, [flushAllWrites, resetNotebookSessionInWorker]);
+
+  const executeNotebookCell = useCallback(async ({ filename, document, cellId }) => {
+    const cellIndex = document.cells.findIndex((cell) => cell.id === cellId);
+    const cell = cellIndex >= 0 ? document.cells[cellIndex] : null;
+
+    if (!cell) {
+      return { error: "Notebook cell could not be found." };
+    }
+
+    await flushAllWrites();
+    setBottomPanelMode("terminal");
+    setMobilePane("editor");
+    setOfflineProofVisible(false);
+    setNotebookStateByFile((prev) => ({
+      ...prev,
+      [filename]: {
+        ...(prev[filename] || createEmptyNotebookState()),
+        runningCellId: cellId,
+      },
+    }));
+
+    const cellLabel = `Cell ${cellIndex + 1}`;
+    terminalRef.current?.writeln(`\x1b[90m$ Running ${filename} - ${cellLabel}...\x1b[0m`);
+    setStatus(`Running ${cellLabel}...`);
+
+    const result = await runNotebookCellInWorker({
+      notebookKey: getNotebookSessionKey(activeWorkspaceRef.current, filename),
+      filename,
+      cellId,
+      code: cell.source,
+    });
+
+    const normalizedResult = {
+      error: result?.error || "",
+      stdout: String(result?.stdout ?? ""),
+      stderr: String(result?.stderr ?? ""),
+      figures: normalizePythonFigures(result?.figures),
+      tables: normalizePythonTables(result?.tables),
+      durationMs: typeof result?.durationMs === "number" ? result.durationMs : null,
+      executedAt: Date.now(),
+    };
+
+    setNotebookStateByFile((prev) => {
+      const current = prev[filename] || createEmptyNotebookState();
+      return {
+        ...prev,
+        [filename]: {
+          ...current,
+          runningCellId: "",
+          cellResults: {
+            ...current.cellResults,
+            [cellId]: normalizedResult,
+          },
+        },
+      };
+    });
+
+    if (normalizedResult.error) {
+      setStatus("Error");
+      return normalizedResult;
+    }
+
+    setStatus("Python notebook ready");
+    const durationLabel = formatExecutionDuration(normalizedResult.durationMs);
+    if (durationLabel) {
+      terminalRef.current?.writeln(`\x1b[36m[Notebook] ${cellLabel} executed on this device in ${durationLabel}.\x1b[0m`);
+    }
+
+    return normalizedResult;
+  }, [flushAllWrites, runNotebookCellInWorker]);
+
+  const handleRunNotebookAll = useCallback(async (filename, fileContent) => {
+    const parsed = parsePythonNotebookDocument(fileContent);
+    if (parsed.error || !parsed.document) {
+      const message = parsed.error || "Notebook could not be parsed.";
+      terminalRef.current?.writeln(`\x1b[31m[Notebook] ${message}\x1b[0m`);
+      setStatus("Error");
+      return;
+    }
+
+    const document = parsed.document;
+    setNotebookStateByFile((prev) => ({
+      ...prev,
+      [filename]: {
+        ...(prev[filename] || createEmptyNotebookState()),
+        cellResults: {},
+        runningCellId: "",
+        runAllInProgress: true,
+      },
+    }));
+
+    const resetResult = await resetNotebookKernel(filename, { announce: false, clearOutputs: false });
+    if (resetResult?.error) {
+      setNotebookStateByFile((prev) => ({
+        ...prev,
+        [filename]: {
+          ...(prev[filename] || createEmptyNotebookState()),
+          runningCellId: "",
+          runAllInProgress: false,
+        },
+      }));
+      return;
+    }
+
+    terminalRef.current?.writeln(`\x1b[90m$ Running notebook ${filename} (${document.cells.length} cells)...\x1b[0m`);
+
+    try {
+      for (const cell of document.cells) {
+        const result = await executeNotebookCell({ filename, document, cellId: cell.id });
+        if (result?.error) {
+          break;
+        }
+      }
+    } finally {
+      setNotebookStateByFile((prev) => ({
+        ...prev,
+        [filename]: {
+          ...(prev[filename] || createEmptyNotebookState()),
+          runningCellId: "",
+          runAllInProgress: false,
+        },
+      }));
+    }
+  }, [executeNotebookCell, resetNotebookKernel]);
+
   const handleRun = useCallback(async () => {
     terminalRef.current?.cancelInput({ newline: false });
     if (isActiveFileLoading) {
@@ -1902,12 +2128,17 @@ export default function App({ onNavigateHome }) {
       return;
     }
     setOfflineProofVisible(false);
-    const syncedSnapshot = syncActiveEditorDraft();
     const file = files.find((entry) => entry.name === activeFile);
     if (!file) {
       return;
     }
 
+    if (isPythonNotebookFile(activeFile)) {
+      await handleRunNotebookAll(activeFile, file.content);
+      return;
+    }
+
+    const syncedSnapshot = syncActiveEditorDraft();
     setMobilePane("output");
     const runtime = getRuntimeKind(activeFile);
     setBottomPanelMode(runtime === "sqlite" || runtime === "pglite" ? "output" : "terminal");
@@ -2007,6 +2238,7 @@ export default function App({ onNavigateHome }) {
     executeSqliteFile,
     files,
     flushAllWrites,
+    handleRunNotebookAll,
     isActiveFileLoading,
     isJsReady,
     isReady,
@@ -2220,6 +2452,34 @@ export default function App({ onNavigateHome }) {
     }
   }, [flushAllWrites, isJsRunning, isRunning, isSqlRunning, readFile, syncActiveEditorDraft, upsertFileContent]);
 
+  const persistNotebookDocument = useCallback((filename, document, options = {}) => {
+    const {
+      selectedCellId = null,
+      preserveResults = true,
+    } = options;
+    const serialized = serializePythonNotebookDocument(document);
+
+    upsertFileContent(filename, serialized);
+    stageRecoveryWrite(filename, serialized);
+    scheduleWrite(filename, serialized);
+
+    if (selectedCellId) {
+      setNotebookSelectionByFile((prev) => ({
+        ...prev,
+        [filename]: selectedCellId,
+      }));
+    }
+
+    if (!preserveResults) {
+      setNotebookStateByFile((prev) => ({
+        ...prev,
+        [filename]: createEmptyNotebookState(),
+      }));
+    }
+
+    return serialized;
+  }, [scheduleWrite, stageRecoveryWrite, upsertFileContent]);
+
   const handleCodeChange = useCallback((newContent) => {
     if (!activeFile) {
       return;
@@ -2229,16 +2489,107 @@ export default function App({ onNavigateHome }) {
     scheduleWrite(activeFile, newContent);
   }, [activeFile, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
 
+  const handleNotebookSelectCell = useCallback((filename, cellId) => {
+    setNotebookSelectionByFile((prev) => ({
+      ...prev,
+      [filename]: cellId,
+    }));
+  }, []);
+
+  const handleNotebookCellChange = useCallback((filename, document, cellId, nextSource) => {
+    const nextDocument = {
+      ...document,
+      cells: document.cells.map((cell) => (
+        cell.id === cellId
+          ? { ...cell, source: nextSource }
+          : cell
+      )),
+    };
+
+    persistNotebookDocument(filename, nextDocument, { selectedCellId: cellId });
+  }, [persistNotebookDocument]);
+
+  const handleNotebookAddCellAfter = useCallback((filename, document, afterCellId) => {
+    const nextCell = createNotebookCell("");
+    const cellIndex = document.cells.findIndex((cell) => cell.id === afterCellId);
+    const nextCells = [...document.cells];
+
+    if (cellIndex === -1) {
+      nextCells.push(nextCell);
+    } else {
+      nextCells.splice(cellIndex + 1, 0, nextCell);
+    }
+
+    persistNotebookDocument(
+      filename,
+      {
+        ...document,
+        cells: nextCells,
+      },
+      { selectedCellId: nextCell.id },
+    );
+  }, [persistNotebookDocument]);
+
+  const handleNotebookDeleteCell = useCallback((filename, document, cellId) => {
+    const removedIndex = document.cells.findIndex((cell) => cell.id === cellId);
+    const remainingCells = document.cells.filter((cell) => cell.id !== cellId);
+    const nextCells = remainingCells.length > 0 ? remainingCells : [createNotebookCell("")];
+    const safeIndex = Math.max(0, Math.min(removedIndex, nextCells.length - 1));
+    const nextSelectedCellId = nextCells[safeIndex]?.id || nextCells[0].id;
+
+    persistNotebookDocument(
+      filename,
+      {
+        ...document,
+        cells: nextCells,
+      },
+      { selectedCellId: nextSelectedCellId },
+    );
+
+    setNotebookStateByFile((prev) => {
+      const current = prev[filename] || createEmptyNotebookState();
+      if (!current.cellResults[cellId]) {
+        return prev;
+      }
+
+      const nextResults = { ...current.cellResults };
+      delete nextResults[cellId];
+
+      return {
+        ...prev,
+        [filename]: {
+          ...current,
+          cellResults: nextResults,
+          runningCellId: current.runningCellId === cellId ? "" : current.runningCellId,
+        },
+      };
+    });
+  }, [persistNotebookDocument]);
+
+  const handleRepairNotebook = useCallback((filename) => {
+    const document = createDefaultPythonNotebookDocument();
+    persistNotebookDocument(filename, document, {
+      selectedCellId: document.cells[0]?.id || null,
+      preserveResults: false,
+    });
+  }, [persistNotebookDocument]);
+
   const handleCreateFile = useCallback(async (name) => {
     const trimmed = normalizeWorkspaceFilename(name);
     if (files.some((file) => file.name === trimmed)) {
       throw new Error("File already exists.");
     }
+    const initialContent = isPythonNotebookFile(trimmed) ? createNotebookFileContent() : "";
     await prepareWorkspaceMutation("creating files");
-    await writeFile(trimmed, "", "workspace", activeWorkspaceRef.current);
+    await writeFile(trimmed, initialContent, "workspace", activeWorkspaceRef.current);
     await refreshWorkspaceFiles(trimmed, { workspaceName: activeWorkspaceRef.current });
     setMobilePane("editor");
   }, [files, prepareWorkspaceMutation, refreshWorkspaceFiles, writeFile]);
+
+  const handleCreateNotebook = useCallback(async () => {
+    const nextFilename = createNotebookFilename(files);
+    await handleCreateFile(nextFilename);
+  }, [files, handleCreateFile]);
 
   const handleRenameFile = useCallback(async (currentName, nextName) => {
     const trimmed = normalizeWorkspaceFilename(nextName);
@@ -2251,6 +2602,26 @@ export default function App({ onNavigateHome }) {
     await prepareWorkspaceMutation("renaming files");
     await renameWorkspaceFile(currentName, trimmed, activeWorkspaceRef.current);
     clearRecoveryWrite(currentName);
+    setNotebookSelectionByFile((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, currentName)) {
+        return prev;
+      }
+
+      const next = { ...prev };
+      next[trimmed] = next[currentName];
+      delete next[currentName];
+      return next;
+    });
+    setNotebookStateByFile((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, currentName)) {
+        return prev;
+      }
+
+      const next = { ...prev };
+      next[trimmed] = next[currentName];
+      delete next[currentName];
+      return next;
+    });
     setOpenFiles((prev) => prev.map((fileName) => (
       fileName === currentName ? trimmed : fileName
     )));
@@ -2261,6 +2632,22 @@ export default function App({ onNavigateHome }) {
     await prepareWorkspaceMutation("deleting files");
     await deleteWorkspaceFile(filename, "workspace", activeWorkspaceRef.current);
     clearRecoveryWrite(filename);
+    setNotebookSelectionByFile((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, filename)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[filename];
+      return next;
+    });
+    setNotebookStateByFile((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, filename)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[filename];
+      return next;
+    });
     setOpenFiles((prev) => prev.filter((fileName) => fileName !== filename));
     const remainingNames = files.filter((file) => file.name !== filename).map((file) => file.name);
     if (remainingNames.length === 0) {
@@ -2302,10 +2689,25 @@ export default function App({ onNavigateHome }) {
   }, [handleFileSelect, isJsRunning, isRunning, isSqlRunning, openFiles]);
 
   const activeFileData = files.find((file) => file.name === activeFile);
+  const isActiveNotebook = isPythonNotebookFile(activeFile);
+  const activeNotebookState = useMemo(() => {
+    if (!isActiveNotebook) {
+      return { document: null, error: "" };
+    }
+
+    return parsePythonNotebookDocument(activeFileData?.content ?? "");
+  }, [activeFileData?.content, isActiveNotebook]);
+  const activeNotebookDocument = activeNotebookState.document;
+  const activeNotebookParseError = activeNotebookState.error;
+  const activeNotebookUiState = notebookStateByFile[activeFile] || createEmptyNotebookState();
+  const activeNotebookSelectedCellId =
+    notebookSelectionByFile[activeFile] ||
+    activeNotebookDocument?.cells?.[0]?.id ||
+    "";
   const isMobileLayout = viewportWidth < MOBILE_LAYOUT_BREAKPOINT;
   const activeRuntime = getRuntimeKind(activeFile);
   const showSqlResultsPanel = activeRuntime === "sqlite" || activeRuntime === "pglite";
-  const showPythonOutputPanel = activeRuntime === "python";
+  const showPythonOutputPanel = activeRuntime === "python" && !isActiveNotebook;
   const activeSqlResult = sqlExecution.filename === activeFile ? sqlExecution : null;
   const activePythonResult = pythonExecution.filename === activeFile ? pythonExecution : null;
   const activeRuntimeReady =
@@ -2403,6 +2805,16 @@ export default function App({ onNavigateHome }) {
     bottomPanelMode === "output" && offlineProofVisible ? "Offline Proof" : currentLanguageLabel;
 
   useEffect(() => {
+    if (!isActiveNotebook) {
+      return;
+    }
+
+    editorSubscriptionRef.current?.dispose();
+    editorSubscriptionRef.current = null;
+    editorRef.current = null;
+  }, [isActiveNotebook]);
+
+  useEffect(() => {
     if (offlineProofVisible) {
       return;
     }
@@ -2476,7 +2888,9 @@ export default function App({ onNavigateHome }) {
     isAnyRuntimeBusy ||
     isActiveFileLoading ||
     activeRuntime === "unknown" ||
-    !activeRuntimeReady;
+    !activeRuntimeReady ||
+    (isActiveNotebook && Boolean(activeNotebookParseError));
+  const runButtonLabel = isActiveNotebook ? "▶ Run All" : "▶ Run";
   const desktopNavWidth = ACTIVITY_BAR_WIDTH + sidebarWidth;
   const sidebarModeLabel = sidebarMode === "search" ? "Search" : "Explorer";
   const mobileNavMode =
@@ -2506,6 +2920,7 @@ export default function App({ onNavigateHome }) {
       onCreateWorkspace={handleCreateWorkspace}
       onFileSelect={handleFileSelect}
       onCreateFile={handleCreateFile}
+      onCreateNotebook={handleCreateNotebook}
       onRenameFile={handleRenameFile}
       onDeleteFile={handleDeleteFile}
       disabled={isAnyRuntimeBusy || !workspaceBootstrapped}
@@ -2526,6 +2941,56 @@ export default function App({ onNavigateHome }) {
         <EmptyEditorState workspaceName={activeWorkspace} isMobile={isMobileLayout} />
       ) : !activeFile ? (
         <EmptyEditorState workspaceName={activeWorkspace} hasFiles isMobile={isMobileLayout} />
+      ) : isActiveNotebook ? (
+        <PythonNotebook
+          filename={activeFile}
+          document={activeNotebookDocument}
+          parseError={activeNotebookParseError}
+          selectedCellId={activeNotebookSelectedCellId}
+          cellResults={activeNotebookUiState.cellResults}
+          runningCellId={activeNotebookUiState.runningCellId}
+          runAllInProgress={activeNotebookUiState.runAllInProgress}
+          sessionBusy={isRunning}
+          runtimeReady={isReady}
+          themeMode={ideTheme === "inverted" ? "day" : "night"}
+          EditorComponent={Editor}
+          onSelectCell={(cellId) => handleNotebookSelectCell(activeFile, cellId)}
+          onCellChange={(cellId, nextSource) => {
+            if (!activeNotebookDocument) {
+              return;
+            }
+            handleNotebookCellChange(activeFile, activeNotebookDocument, cellId, nextSource);
+          }}
+          onAddCellAfter={(cellId) => {
+            if (!activeNotebookDocument) {
+              return;
+            }
+            handleNotebookAddCellAfter(activeFile, activeNotebookDocument, cellId);
+          }}
+          onDeleteCell={(cellId) => {
+            if (!activeNotebookDocument) {
+              return;
+            }
+            handleNotebookDeleteCell(activeFile, activeNotebookDocument, cellId);
+          }}
+          onRunCell={(cellId) => {
+            if (!activeNotebookDocument) {
+              return;
+            }
+            void executeNotebookCell({
+              filename: activeFile,
+              document: activeNotebookDocument,
+              cellId,
+            });
+          }}
+          onRunAll={() => {
+            void handleRunNotebookAll(activeFile, activeFileData?.content ?? "");
+          }}
+          onResetSession={() => {
+            void resetNotebookKernel(activeFile);
+          }}
+          onRepair={() => handleRepairNotebook(activeFile)}
+        />
       ) : (
         <Suspense
           fallback={(
@@ -2647,6 +3112,18 @@ export default function App({ onNavigateHome }) {
                     setPythonExecution(createEmptyPythonExecution());
                     return;
                   }
+                  if (bottomPanelMode === "output" && isActiveNotebook) {
+                    setNotebookStateByFile((prev) => ({
+                      ...prev,
+                      [activeFile]: {
+                        ...(prev[activeFile] || createEmptyNotebookState()),
+                        cellResults: {},
+                        runningCellId: "",
+                        runAllInProgress: false,
+                      },
+                    }));
+                    return;
+                  }
                   terminalRef.current?.clear?.();
                 }}
                 style={terminalActionButtonStyle()}
@@ -2713,7 +3190,7 @@ export default function App({ onNavigateHome }) {
               status={activeStatusMessage}
             />
           ) : (
-            <OutputPlaceholder activeFile={activeFile} />
+            <OutputPlaceholder activeFile={activeFile} isNotebook={isActiveNotebook} />
           )}
         </div>
       </div>
@@ -2899,7 +3376,7 @@ export default function App({ onNavigateHome }) {
                 style={runButtonStyle(runButtonDisabled)}
                 className="wf-run-btn"
               >
-                ▶ Run
+                {runButtonLabel}
               </button>
             </div>
           </div>
@@ -3054,7 +3531,7 @@ export default function App({ onNavigateHome }) {
             {mobilePane !== "files" ? (
               <button
               type="button"
-              aria-label="Run current file"
+              aria-label={isActiveNotebook ? "Run notebook" : "Run current file"}
               onClick={handleRun}
               disabled={runButtonDisabled}
               style={mobileRunButtonStyle(runButtonDisabled)}
@@ -3841,7 +4318,7 @@ function PlayIcon() {
   );
 }
 
-function OutputPlaceholder({ activeFile }) {
+function OutputPlaceholder({ activeFile, isNotebook = false }) {
   return (
     <div
       style={{
@@ -3868,10 +4345,12 @@ function OutputPlaceholder({ activeFile }) {
           Output
         </div>
         <div style={{ marginTop: "14px", color: "var(--ide-shell-text)", fontSize: "16px", fontWeight: 700, letterSpacing: "0.01em" }}>
-          SQL results appear here
+          {isNotebook ? "Notebook output stays inline" : "SQL results appear here"}
         </div>
         <div style={{ marginTop: "8px", fontSize: "12px", lineHeight: 1.7, color: "var(--ide-shell-muted)" }}>
-          Run a `.sql` or `.pg` file to inspect result sets and schema output in this panel.
+          {isNotebook
+            ? "Run cells inside the notebook to keep tables, figures, and stdout attached to the cell that produced them."
+            : "Run a `.sql` or `.pg` file to inspect result sets and schema output in this panel."}
         </div>
       </div>
     </div>
@@ -4138,6 +4617,8 @@ function getFileVisualMeta(filename = "") {
       return { label: "SQL", accent: "var(--ide-file-sql-accent)", surface: "var(--ide-file-sql-surface)" };
     case "pg":
       return { label: "PG", accent: "var(--ide-file-pg-accent)", surface: "var(--ide-file-pg-surface)" };
+    case "wfnb":
+      return { label: "NB", accent: "var(--ide-file-py-accent)", surface: "var(--ide-file-py-surface)" };
     default:
       return { label: "TXT", accent: "var(--ide-file-txt-accent)", surface: "var(--ide-file-txt-surface)" };
   }

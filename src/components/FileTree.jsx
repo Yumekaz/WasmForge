@@ -12,6 +12,7 @@ function FileTree({
   onCreateWorkspace,
   onFileSelect,
   onCreateFile,
+  onCreateNotebook,
   onRenameFile,
   onDeleteFile,
   disabled = false,
@@ -339,6 +340,42 @@ function FileTree({
               +
             </span>
             <span>Create File</span>
+          </button>
+
+          <button
+            className="wf-create-file-btn"
+            type="button"
+            onClick={() => {
+              if (disabled) {
+                return;
+              }
+              setWorkspaceMenuOpen(false);
+              setContextMenu(null);
+              setEditingName(null);
+              setCreateName("");
+              void onCreateNotebook?.();
+            }}
+            disabled={disabled}
+            aria-label="Create notebook"
+            title="Create notebook"
+            style={createFileButtonStyle(disabled)}
+          >
+            <span
+              style={{
+                width: "18px",
+                height: "18px",
+                borderRadius: "4px",
+                display: "grid",
+                placeItems: "center",
+                background: "var(--ide-shell-accent-soft)",
+                fontSize: "10px",
+                fontWeight: 800,
+                lineHeight: 1,
+              }}
+            >
+              NB
+            </span>
+            <span>Create Notebook</span>
           </button>
         </div>
 
@@ -864,6 +901,8 @@ function getFileMeta(filename) {
       return { label: "SQL", accent: "var(--ide-file-sql-accent)", surface: "var(--ide-file-sql-surface)" };
     case "pg":
       return { label: "PG", accent: "var(--ide-file-pg-accent)", surface: "var(--ide-file-pg-surface)" };
+    case "wfnb":
+      return { label: "NB", accent: "var(--ide-file-py-accent)", surface: "var(--ide-file-py-surface)" };
     default:
       return { label: "TXT", accent: "var(--ide-file-txt-accent)", surface: "var(--ide-file-txt-surface)" };
   }

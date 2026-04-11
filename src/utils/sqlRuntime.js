@@ -10,6 +10,7 @@ function normalizeWorkspaceSegment(workspaceName = "") {
 export function getRuntimeKind(filename) {
   switch (getFileExtension(filename)) {
     case "py":
+    case "wfnb":
       return "python";
     case "sql":
       return "sqlite";
