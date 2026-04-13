@@ -624,14 +624,29 @@ export default function LandingPage({ onOpenIde }) {
           </h2>
         </div>
 
-        <div className="wf-thread-map wf-rv">
-          <div className="wf-thread-map__label">Thread model</div>
-          <div><span className="wf-tone wf-tone--sky">Main Thread</span> → <span className="wf-tone wf-tone--lav">Execution Router</span> → <span className="wf-tone wf-tone--mint">Python Worker</span> (Pyodide)</div>
-          <div className="wf-thread-map__indent">├→ <span className="wf-tone wf-tone--amber">JS/TS Worker</span> (Sucrase)</div>
-          <div className="wf-thread-map__indent">├→ <span className="wf-tone wf-tone--sky">SQLite Worker</span> (sql.js)</div>
-          <div className="wf-thread-map__indent">└→ <span className="wf-tone wf-tone--sky">PGlite Worker</span> (PostgreSQL)</div>
-          <div><span className="wf-tone wf-tone--sky">Main Thread</span> → <span className="wf-tone wf-tone--lav">I/O Worker</span> → <span className="wf-tone wf-tone--amber">OPFS</span></div>
-          <div><span className="wf-tone wf-tone--mint">SharedArrayBuffer</span> ↔ <span className="wf-tone wf-tone--mint">Python input()</span> blocks the worker, not the UI.</div>
+        <div className="wf-diagram wf-rv">
+          <div className="wf-diagram__label">Thread model</div>
+          <div className="wf-diagram-row">
+            <div className="wf-diagram-node wf-diagram-node--sky">Main Thread <span className="wf-node-sub">UI & Shell</span></div>
+            <div className="wf-diagram-arrow">→</div>
+            <div className="wf-diagram-node wf-diagram-node--lav">Execution Router <span className="wf-node-sub">Task Queue</span></div>
+            <div className="wf-diagram-arrow">→</div>
+            <div className="wf-diagram-branches">
+              <div className="wf-diagram-node wf-diagram-node--mint">Python Worker <span className="wf-node-sub">Pyodide</span></div>
+              <div className="wf-diagram-node wf-diagram-node--amber">Web Worker <span className="wf-node-sub">Sucrase JS/TS</span></div>
+              <div className="wf-diagram-node wf-diagram-node--sky">Data Workers <span className="wf-node-sub">SQLite + PGlite</span></div>
+            </div>
+          </div>
+          <div className="wf-diagram-row">
+            <div className="wf-diagram-node wf-diagram-node--sky">Main Thread <span className="wf-node-sub">OPFS Sync</span></div>
+            <div className="wf-diagram-arrow">→</div>
+            <div className="wf-diagram-node wf-diagram-node--lav">I/O Worker <span className="wf-node-sub">File Access</span></div>
+            <div className="wf-diagram-arrow">→</div>
+            <div className="wf-diagram-node wf-diagram-node--amber">OPFS <span className="wf-node-sub">Persistence</span></div>
+          </div>
+          <div className="wf-diagram-note">
+            <span className="wf-tone wf-tone--mint">SharedArrayBuffer</span> ↔ <span className="wf-tone wf-tone--mint">Python input()</span> blocks the worker thread instead of freezing the UI.
+          </div>
         </div>
       </section>
 
