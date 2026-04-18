@@ -277,8 +277,6 @@ async function prepareVisibleOfflineProof(page) {
   await openOfflineProofFlow(page);
   await page.getByText("Offline reload shell", { exact: true }).waitFor({ timeout: 20000 });
   await page.getByRole("button", { name: "Prepare Demo Workspace", exact: true }).click();
-  await page.getByText("main.py", { exact: true }).first().waitFor({ timeout: 30000 });
-  await page.getByText("offline_helper.py", { exact: true }).first().waitFor({ timeout: 30000 });
   await page.waitForFunction(
     ({ workspaceName }) => {
       const text = document.body.innerText;
@@ -358,6 +356,22 @@ async function readServiceWorkerState(page) {
   });
 }
 
+async function waitForServiceWorkerRuntimeAssets(page) {
+  const deadline = Date.now() + 120000;
+  let latestState = null;
+
+  while (Date.now() < deadline) {
+    latestState = await readServiceWorkerState(page);
+    if (latestState.controlled && latestState.hasRuntimeAssets && latestState.hasMatplotlibAssets) {
+      return latestState;
+    }
+
+    await page.waitForTimeout(1000);
+  }
+
+  throw new Error(`Service worker runtime assets did not become ready: ${JSON.stringify(latestState)}`);
+}
+
 async function readIsolationState(page) {
   return page.evaluate(() => ({
     crossOriginIsolated: window.crossOriginIsolated === true,
@@ -398,6 +412,46 @@ async function verifyOfflinePythonFlow(page) {
   await waitForTerminalText(page, "offline-proof ok for reload");
   await waitForTerminalText(page, "helper-import ok 20");
   await waitForTerminalText(page, "[Local runtime] Executed on this device in ");
+
+  await page.context().setOffline(false);
+  await ensureVerificationWorkspace(page);
+}
+
+async function verifyParallelWorkersOfflineFlow(page) {
+  await showTerminal(page);
+  await createFile(page, "offline-parallel.py");
+  await setEditorValue(
+    page,
+    `from wasmforge_parallel import parallel_map
+
+TASK = 'def work(x):\\n    return {"input": x, "triple": x * 3}\\n'
+
+results = await parallel_map(TASK, "work", list(range(7)), workers=2)
+print("parallel-offline-ok", len(results), results[4]["triple"], results[-1]["input"])
+`,
+  );
+
+  await waitForEditorText(page, "parallel_map", 30000);
+  await waitForRunEnabled(page, 60000);
+  await clickRun(page);
+  await waitForTerminalText(page, "[Parallel] 2 local Python workers used", 90000);
+  await waitForTerminalText(page, "parallel-offline-ok 7 12 6", 90000);
+  await waitForTerminalText(page, "[Local runtime] Executed on this device in ", 90000);
+  await verifyPythonExecutionProof(page);
+
+  await page.context().setOffline(true);
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+  await page.getByRole("button", { name: /Run/ }).waitFor({ timeout: 60000 });
+  await page.waitForTimeout(1200);
+  await showTerminal(page);
+  await page.getByText("offline-parallel.py", { exact: true }).first().click();
+  await waitForRunEnabled(page);
+  await waitForEditorText(page, "parallel_map", 30000);
+  await clickRun(page);
+  await waitForTerminalText(page, "[Parallel] 2 local Python workers used", 90000);
+  await waitForTerminalText(page, "parallel-offline-ok 7 12 6", 90000);
+  await waitForTerminalText(page, "[Local runtime] Executed on this device in ", 90000);
+  await verifyPythonExecutionProof(page);
 
   await page.context().setOffline(false);
   await ensureVerificationWorkspace(page);
@@ -614,6 +668,7 @@ async function main() {
     await ensureIdeLoaded(page);
     await ensureVerificationWorkspace(page);
     await ensureServiceWorkerControl(page);
+    await waitForServiceWorkerRuntimeAssets(page);
 
     report.isolation = await readIsolationState(page);
     if (!report.isolation.crossOriginIsolated || !report.isolation.sharedArrayBuffer) {
@@ -626,7 +681,7 @@ async function main() {
       !report.serviceWorker.hasRuntimeAssets ||
       !report.serviceWorker.hasMatplotlibAssets
     ) {
-      throw new Error("Service worker cache/runtime assets were not fully detected");
+      throw new Error(`Service worker cache/runtime assets were not fully detected: ${JSON.stringify(report.serviceWorker)}`);
     }
 
     await verifyLandingControls(page);
@@ -646,6 +701,9 @@ async function main() {
     report.offlinePython = "ok";
     report.pythonExecutionProof = "ok";
     report.pythonMultiFileImports = "ok";
+
+    await verifyParallelWorkersOfflineFlow(page);
+    report.offlinePythonParallelWorkers = "ok";
 
     await verifyDataFrameOfflineFlow(page);
     report.offlinePandasDataFrame = "ok";

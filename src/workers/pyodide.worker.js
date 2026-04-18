@@ -14,11 +14,14 @@ let initializationPromise = null
 let activeExecutionMode = 'script'
 let notebookStdoutBuffer = ''
 let notebookStderrBuffer = ''
+let parallelJobCounter = 0
 const textDecoder = new TextDecoder()
 const STDIN_SIGNAL_INDEX = 0
 const STDIN_LENGTH_INDEX = 1
 const STDIN_HEADER_INTS = 2
 const STDIN_HEADER_BYTES = Int32Array.BYTES_PER_ELEMENT * STDIN_HEADER_INTS
+const MAX_PARALLEL_WORKERS = 4
+const PARALLEL_TASK_TIMEOUT_MS = 90_000
 const PACKAGE_IMPORT_PATTERNS = [
   { packageName: 'pandas', pattern: /^\s*(?:from\s+pandas\b|import\s+pandas\b)/m },
   { packageName: 'numpy', pattern: /^\s*(?:from\s+numpy\b|import\s+numpy\b)/m },
@@ -48,6 +51,22 @@ function collectRequestedPackages(source = '') {
 function resetNotebookBuffers() {
   notebookStdoutBuffer = ''
   notebookStderrBuffer = ''
+}
+
+function bufferStdout(data = '') {
+  const output = String(data)
+  stdoutBuffer += output
+  if (activeExecutionMode === 'notebook') {
+    notebookStdoutBuffer += output
+  }
+}
+
+function bufferStderr(data = '') {
+  const output = String(data)
+  stderrBuffer += output
+  if (activeExecutionMode === 'notebook') {
+    notebookStderrBuffer += output
+  }
 }
 
 function flushBufferedOutput() {
@@ -448,6 +467,161 @@ builtins._wasmforge_reset_notebook_session(
   `)
 }
 
+function getParallelWorkerLimit(requestedWorkers, inputCount) {
+  const requested = Number.parseInt(requestedWorkers, 10)
+  const hardwareLimit = Number.isFinite(navigator?.hardwareConcurrency)
+    ? navigator.hardwareConcurrency
+    : MAX_PARALLEL_WORKERS
+
+  return Math.max(
+    1,
+    Math.min(
+      Number.isFinite(requested) && requested > 0 ? requested : 2,
+      Math.max(1, hardwareLimit),
+      MAX_PARALLEL_WORKERS,
+      Math.max(1, inputCount),
+    ),
+  )
+}
+
+function getParallelWorkerUrl() {
+  const baseHref = new URL(baseUrl, self.location.origin)
+  return new URL('workers/pyodide.parallel.worker.js', baseHref).toString()
+}
+
+function chunkInputs(inputs, workerCount) {
+  const chunkSize = Math.ceil(inputs.length / workerCount)
+  const chunks = []
+
+  for (let index = 0; index < workerCount; index += 1) {
+    const start = index * chunkSize
+    const end = Math.min(start + chunkSize, inputs.length)
+    if (start < end) {
+      chunks.push({
+        index,
+        inputs: inputs.slice(start, end),
+      })
+    }
+  }
+
+  return chunks
+}
+
+function runParallelChunk({
+  taskSource,
+  functionName,
+  inputs,
+  workerIndex,
+  indexURL,
+  lockFileURL,
+}) {
+  const workerUrl = getParallelWorkerUrl()
+  const worker = new Worker(workerUrl, { type: 'classic' })
+  const jobId = `parallel-${Date.now()}-${parallelJobCounter += 1}`
+
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      worker.terminate()
+      reject(new Error(`Parallel worker ${workerIndex + 1} timed out after ${PARALLEL_TASK_TIMEOUT_MS / 1000}s`))
+    }, PARALLEL_TASK_TIMEOUT_MS)
+
+    worker.onmessage = (event) => {
+      const { type, jobId: responseJobId, resultsJson, error } = event.data || {}
+      if (responseJobId !== jobId) {
+        return
+      }
+
+      clearTimeout(timeoutId)
+      worker.terminate()
+
+      if (type === 'result') {
+        resolve({
+          workerIndex,
+          results: JSON.parse(resultsJson),
+        })
+        return
+      }
+
+      reject(new Error(error || `Parallel worker ${workerIndex + 1} failed`))
+    }
+
+    worker.onerror = (errorEvent) => {
+      clearTimeout(timeoutId)
+      worker.terminate()
+      reject(new Error(errorEvent.message || `Parallel worker ${workerIndex + 1} crashed`))
+    }
+
+    worker.postMessage({
+      type: 'run',
+      jobId,
+      indexURL,
+      lockFileURL,
+      taskSource,
+      functionName,
+      inputsJson: JSON.stringify(inputs),
+    })
+  })
+}
+
+async function runParallelMapFromPython(taskSource, functionName, inputsJson, requestedWorkers = 2) {
+  let inputs
+  try {
+    inputs = JSON.parse(String(inputsJson || '[]'))
+  } catch (err) {
+    throw new Error(`parallel_map inputs must be JSON-serializable: ${err.message || err}`)
+  }
+
+  if (!Array.isArray(inputs)) {
+    throw new Error('parallel_map inputs must serialize to a list')
+  }
+
+  if (inputs.length === 0) {
+    return JSON.stringify({
+      results: [],
+      workers: 0,
+      durationMs: 0,
+    })
+  }
+
+  const { indexURL, lockFileURL } = getPyodideAssetUrls()
+  const workerCount = getParallelWorkerLimit(requestedWorkers, inputs.length)
+  const chunks = chunkInputs(inputs, workerCount)
+  const startedAt = performance.now()
+
+  bufferStdout(`[Parallel] ${chunks.length} local Python workers used for ${inputs.length} tasks.\n`)
+  flushBufferedOutput()
+
+  try {
+    const chunkResults = await Promise.all(
+      chunks.map((chunk) =>
+        runParallelChunk({
+          taskSource: String(taskSource ?? ''),
+          functionName: String(functionName ?? ''),
+          inputs: chunk.inputs,
+          workerIndex: chunk.index,
+          indexURL,
+          lockFileURL,
+        }),
+      ),
+    )
+
+    const orderedResults = chunkResults
+      .sort((left, right) => left.workerIndex - right.workerIndex)
+      .flatMap((chunk) => chunk.results)
+    const durationMs = performance.now() - startedAt
+
+    bufferStdout(`[Parallel] Completed ${inputs.length} tasks in ${durationMs.toFixed(1)}ms.\n`)
+
+    return JSON.stringify({
+      results: orderedResults,
+      workers: chunks.length,
+      durationMs,
+    })
+  } catch (err) {
+    throw new Error(`parallel_map failed: ${err.message || err}`)
+  }
+}
+
 async function initPyodide() {
   try {
     const { indexURL, scriptURL, lockFileURL } = getPyodideAssetUrls()
@@ -464,19 +638,10 @@ async function initPyodide() {
     })
 
     // Expose JS callbacks before overriding Python streams.
-    pyodide.globals.set('postStdout', (s) => {
-      stdoutBuffer += s
-      if (activeExecutionMode === 'notebook') {
-        notebookStdoutBuffer += s
-      }
-    })
-    pyodide.globals.set('postStderr', (s) => {
-      stderrBuffer += s
-      if (activeExecutionMode === 'notebook') {
-        notebookStderrBuffer += s
-      }
-    })
+    pyodide.globals.set('postStdout', bufferStdout)
+    pyodide.globals.set('postStderr', bufferStderr)
     pyodide.globals.set('_wasmforgeStdin', stdinHandler)
+    pyodide.globals.set('_wasmforgeParallelMap', runParallelMapFromPython)
 
     // Override sys.stdout and sys.stderr to capture Python output
     // and route it to our buffering system instead of the console.
@@ -484,6 +649,7 @@ async function initPyodide() {
 import builtins
 import math
 import sys
+import types
 
 builtins._wasmforge_display_payloads = []
 builtins._wasmforge_notebook_sessions = {}
@@ -644,6 +810,35 @@ builtins._wasmforge_reset_displays = _wasmforge_reset_displays
 builtins._wasmforge_collect_displays = _wasmforge_collect_displays
 builtins._wasmforge_reset_notebook_session = _wasmforge_reset_notebook_session
 builtins._wasmforge_run_notebook_cell = _wasmforge_run_notebook_cell
+
+wasmforge_parallel = types.ModuleType("wasmforge_parallel")
+
+async def _wasmforge_parallel_map(task_source, function_name, inputs, workers=2):
+    import json
+
+    try:
+        inputs_json = json.dumps(list(inputs))
+    except TypeError as exc:
+        raise TypeError("parallel_map inputs must be JSON-serializable") from exc
+
+    payload_json = await _wasmforgeParallelMap(
+        str(task_source),
+        str(function_name),
+        inputs_json,
+        int(workers),
+    )
+    payload = json.loads(str(payload_json))
+    return payload.get("results", [])
+
+def _wasmforge_parallel_help():
+    return (
+        "Use: results = await parallel_map(task_source, function_name, inputs, workers=2). "
+        "Inputs and return values must be JSON-serializable."
+    )
+
+wasmforge_parallel.parallel_map = _wasmforge_parallel_map
+wasmforge_parallel.help = _wasmforge_parallel_help
+sys.modules["wasmforge_parallel"] = wasmforge_parallel
     `)
 
     self.postMessage({ type: 'load_progress', msg: 'Loading standard Python packages...' })
@@ -702,11 +897,23 @@ async function runPython(code, filename = 'main.py') {
     }
 
     await pyodide.runPythonAsync(`
+import builtins
 import os
-import runpy
+from pyodide.code import eval_code_async
 
 os.chdir("/workspace")
-runpy.run_path(${JSON.stringify(workspacePath)}, run_name="__main__")
+_wasmforge_script_namespace = {
+    "__name__": "__main__",
+    "__package__": None,
+    "__file__": ${JSON.stringify(workspacePath)},
+    "__builtins__": builtins.__dict__,
+}
+await eval_code_async(
+    ${JSON.stringify(code)},
+    globals=_wasmforge_script_namespace,
+    locals=_wasmforge_script_namespace,
+    filename=${JSON.stringify(workspacePath)},
+)
     `)
   } catch (err) {
     const errorMsg = normalizeErrorMessage(err).trim()

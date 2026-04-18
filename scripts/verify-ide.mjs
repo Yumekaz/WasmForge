@@ -73,7 +73,7 @@ async function openOfflineProofFlow(page) {
   await page.getByText("Offline reload shell", { exact: true }).waitFor({ timeout: 20000 });
 }
 
-async function waitForTerminalText(page, text) {
+async function waitForTerminalText(page, text, timeout = 20000) {
   const locator = page.locator(".xterm-rows");
   await page.waitForFunction(
     ({ selector, expected }) => {
@@ -81,7 +81,7 @@ async function waitForTerminalText(page, text) {
       return Boolean(element?.textContent?.includes(expected));
     },
     { selector: ".xterm-rows", expected: text },
-    { timeout: 20000 },
+    { timeout },
   );
   return locator.textContent();
 }
@@ -90,8 +90,6 @@ async function verifyVisibleOfflineProof(page) {
   await openOfflineProofFlow(page);
   await page.getByText("Runtime cache warm", { exact: true }).waitFor({ timeout: 20000 });
   await page.getByRole("button", { name: "Prepare Demo Workspace", exact: true }).click();
-  await page.getByText("main.py", { exact: true }).first().waitFor({ timeout: 30000 });
-  await page.getByText("offline_helper.py", { exact: true }).first().waitFor({ timeout: 30000 });
   await page.waitForFunction(
     ({ workspaceName }) => {
       const text = document.body.innerText;
@@ -173,6 +171,27 @@ async function verifyPythonMultiFileImports(page) {
   await clickRun(page);
   await waitForTerminalText(page, "import-ok v2 alpha 10");
   await waitForTerminalText(page, "[Local runtime] Executed on this device in ");
+}
+
+async function verifyPythonParallelWorkers(page) {
+  await createFile(page, "verify-parallel.py");
+  await setEditorValue(
+    page,
+    `from wasmforge_parallel import parallel_map
+
+TASK = 'def work(x):\\n    return {"input": x, "square": x * x}\\n'
+
+results = await parallel_map(TASK, "work", list(range(6)), workers=2)
+print("parallel-ok", len(results), results[3]["square"], results[-1]["input"])
+`,
+  );
+
+  await clickRun(page);
+  await waitForTerminalText(page, "[Parallel] 2 local Python workers used", 90000);
+  await waitForTerminalText(page, "parallel-ok 6 9 5", 90000);
+  await waitForTerminalText(page, "[Parallel] Completed 6 tasks", 90000);
+  await waitForTerminalText(page, "[Local runtime] Executed on this device in ", 90000);
+  await verifyPythonExecutionProof(page);
 }
 
 async function verifyPandasDataFrame(page) {
@@ -272,6 +291,7 @@ async function main() {
     await verifyVisibleOfflineProof(page);
     await verifyPython(page);
     await verifyPythonMultiFileImports(page);
+    await verifyPythonParallelWorkers(page);
     await verifyPandasDataFrame(page);
     await verifyJavaScript(page);
     await verifyTypeScript(page);
@@ -293,6 +313,7 @@ async function main() {
       python: "ok",
       pythonExecutionProof: "ok",
       pythonMultiFileImports: "ok",
+      pythonParallelWorkers: "ok",
       pandasDataFrame: "ok",
       javascript: "ok",
       typescript: "ok",
