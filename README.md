@@ -11,9 +11,11 @@
 
 </div>
 
-WasmForge is a fully in-browser dev and data environment where Python, Python notebooks, JavaScript, TypeScript, SQLite, and PostgreSQL run on the user's own machine through WebAssembly.
+WasmForge is a browser-first dev and data environment where Python, Python notebooks, JavaScript, TypeScript, SQLite, and PostgreSQL run on the user's own machine through WebAssembly.
 
-There is no execution backend. After the first load, there is no network dependency either.
+For the browser-native core, there is no execution backend. After the first load, there is no network dependency either.
+
+WasmForge now also includes an **optional local-native bridge** for host toolchains. That mode stays offline and serverless in the no-cloud sense, but it is intentionally not presented as a pure browser runtime.
 
 **[→ Open the live demo](https://wasm-forge.vercel.app/)**  
 Landing page: `/`  
@@ -126,6 +128,15 @@ That makes the core claim visible instead of hidden in architecture alone.
 | `.pg` | `PGlite` (PostgreSQL -> Wasm) | Results grid + schema inspector |
 
 **Bundled Python packages for offline use:** NumPy, pandas, matplotlib, python-dateutil, pytz, six, tzdata, plus required plotting dependencies.
+
+### Optional Host Toolchains
+
+If you start the local bridge with `npm run bridge`, WasmForge can detect host toolchains already installed on the same machine and run extra languages against a temporary local snapshot of the current workspace.
+
+- current bridge runners: C, C++, Go, Rust, Java, Zig
+- files stay editable in the IDE and persist through the existing workspace/local-folder flows
+- execution stays offline and local
+- this mode uses a localhost companion process, so it is **not** part of the pure in-browser claim
 
 ---
 
@@ -283,6 +294,16 @@ window.crossOriginIsolated
 
 This must be `true` for synchronous `input()` support.
 
+### Optional Host Bridge
+
+In a second terminal, start the optional local-native bridge:
+
+```bash
+npm run bridge
+```
+
+Then click `Host Bridge` inside the IDE. WasmForge will probe localhost, detect installed host toolchains, and route supported non-browser languages through that bridge.
+
 ### Production Preview
 
 ```bash
@@ -342,6 +363,8 @@ WasmForge is not trying to be a prettier cloud IDE.
 It is trying to prove something more interesting:
 
 **a browser tab can be a real local dev and data environment, with no backend runtime, no post-load network dependency, and no collapse when the internet disappears.**
+
+And when the pure browser boundary is not enough, the optional local-native bridge extends that same local-first model to host compilers without introducing any cloud dependency.
 
 That is the bet this project is making.
 

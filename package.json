@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "bridge": "node scripts/wasmforge-bridge.mjs",
     "verify:ide": "node scripts/verify-ide.mjs",
     "verify:notebook": "node scripts/verify-notebook.mjs",
     "verify:share": "node scripts/verify-share.mjs",

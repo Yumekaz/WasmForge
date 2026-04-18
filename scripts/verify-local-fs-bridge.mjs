@@ -18,6 +18,8 @@ const editedSeedSource = 'print("edited through Monaco into granted folder")\n';
 const nestedSeedFilename = "python/nested_demo.py";
 const nestedSeedSource = 'print("nested seed from granted folder")\n';
 const editedNestedSeedSource = 'print("edited nested file through Monaco")\n';
+const detachedSeedSource = 'print("detached local change wins")\n';
+const divergedDiskSeedSource = 'print("disk changed outside WasmForge during detach")\n';
 
 async function ensureArtifactsDir() {
   await fs.mkdir(artifactsDir, { recursive: true });
@@ -51,7 +53,7 @@ async function ensureWorkspace(page, workspaceName) {
 async function createFile(page, filename) {
   const maybeRow = page.getByText(displayName(filename), { exact: true });
   if (await maybeRow.count()) {
-    await maybeRow.first().click();
+    await selectFile(page, filename);
     return;
   }
 
@@ -60,7 +62,24 @@ async function createFile(page, filename) {
   await input.fill(filename);
   await input.press("Enter");
   await page.getByText(displayName(filename), { exact: true }).first().waitFor();
+  await selectFile(page, filename);
+}
+
+async function selectFile(page, filename) {
   await page.getByText(displayName(filename), { exact: true }).first().click();
+  await page.getByLabel(`Close ${filename}`).waitFor({ timeout: 20000 });
+  await page.waitForTimeout(350);
+}
+
+async function openAirlockPanel(page) {
+  const explicitButton = page.getByLabel(/Open Airlock panel/).first();
+  if (await explicitButton.count()) {
+    await explicitButton.click();
+  } else {
+    await page.getByRole("button", { name: /^Airlock$/ }).first().click();
+  }
+
+  await page.getByText("Airlock Sync", { exact: true }).first().waitFor({ timeout: 20000 });
 }
 
 async function focusEditor(page) {
@@ -109,6 +128,24 @@ async function readGrantedFile(page, filePath) {
       return (await fileHandle.getFile()).text();
     },
     { folderName: grantedFolderName, filePath },
+  );
+}
+
+async function writeGrantedFile(page, filePath, content) {
+  await page.evaluate(
+    async ({ folderName, filePath: selectedPath, content: nextContent }) => {
+      const root = await navigator.storage.getDirectory();
+      let current = await root.getDirectoryHandle(folderName);
+      const parts = selectedPath.split("/").filter(Boolean);
+      for (const segment of parts.slice(0, -1)) {
+        current = await current.getDirectoryHandle(segment, { create: true });
+      }
+      const fileHandle = await current.getFileHandle(parts.at(-1), { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(nextContent);
+      await writable.close();
+    },
+    { folderName: grantedFolderName, filePath, content },
   );
 }
 
@@ -241,7 +278,7 @@ exec('try:\\n    read_text("input.txt")\\nexcept RuntimeError as exc:\\n    prin
 }
 
 async function verifyExplorerBridge(page) {
-  await page.getByText("Selected local folder", { exact: true }).waitFor({ timeout: 20000 });
+  await page.getByText("Linked real folder", { exact: true }).first().waitFor({ timeout: 20000 });
   await page.getByText(seedFilename, { exact: true }).first().waitFor({ timeout: 20000 });
   await page.getByText("input.txt", { exact: true }).first().waitFor({ timeout: 20000 });
   await page.getByText("python", { exact: true }).first().waitFor({ timeout: 20000 });
@@ -250,11 +287,11 @@ async function verifyExplorerBridge(page) {
   await page.getByText("important.zip", { exact: true }).first().waitFor({ timeout: 20000 });
   await page.getByText("nested_demo.py", { exact: true }).first().waitFor({ timeout: 20000 });
 
-  await page.getByText(seedFilename, { exact: true }).first().click();
+  await selectFile(page, seedFilename);
   await setEditorValue(page, editedSeedSource);
   await waitForGrantedFileText(page, seedFilename, "edited through Monaco");
 
-  await page.getByText("nested_demo.py", { exact: true }).first().click();
+  await selectFile(page, nestedSeedFilename);
   await setEditorValue(page, editedNestedSeedSource);
   await waitForGrantedFileText(page, nestedSeedFilename, "edited nested file");
 
@@ -438,29 +475,86 @@ console.log("ts-fs-read", value);
   }
 }
 
-async function verifyDisconnect(page) {
-  await page.getByRole("button", { name: new RegExp(`Disconnect local folder ${escapeRegExp(grantedFolderName)}`) }).click();
-  await page.getByText("Sandboxed browser workspace", { exact: true }).waitFor({ timeout: 20000 });
+async function verifyDetachAndReattach(page) {
+  await openAirlockPanel(page);
+  await page.getByRole("button", { name: "Turn Sync Off" }).click();
+  await page.getByText("Detached local shadow", { exact: true }).first().waitFor({ timeout: 20000 });
 
-  await createFile(page, "local-fs-after-disconnect.py");
+  const snapshotCountBeforeManualSave = await page.getByRole("button", { name: "Restore" }).count();
+  await page.getByRole("button", { name: "Save Snapshot" }).click();
+  await page.getByRole("button", { name: "Restore" }).nth(snapshotCountBeforeManualSave).waitFor({ timeout: 20000 });
+
+  await selectFile(page, seedFilename);
+  await setEditorValue(page, detachedSeedSource);
+  await page.waitForTimeout(600);
+  const diskSeedWhileDetached = await readGrantedFile(page, seedFilename);
+  if (diskSeedWhileDetached !== editedSeedSource) {
+    throw new Error(`Expected detached edits to stay out of the granted folder while sync is off. Saw ${JSON.stringify(diskSeedWhileDetached)} instead of ${JSON.stringify(editedSeedSource)}.`);
+  }
+
+  await createFile(page, "shadow-only.py");
+  await setEditorValue(page, 'print("shadow only file")\n');
+  await page.waitForTimeout(600);
+  if (await grantedFileExists(page, "shadow-only.py")) {
+    throw new Error("Expected detached shadow-only.py to stay out of the granted folder.");
+  }
+
+  await createFile(page, "local-fs-after-detach.py");
   await setEditorValue(
     page,
     `import os
 from wasmforge_fs import is_connected
 
-print("fs-after-disconnect", is_connected())
-print("cwd-after-disconnect", os.getcwd())
+print("fs-after-detach", is_connected())
+print("cwd-after-detach", os.getcwd())
 open("sandbox-only.txt", "w", encoding="utf-8").write("sandbox")
 `,
   );
 
   await clickRun(page);
-  await waitForTerminalText(page, "fs-after-disconnect False");
-  await waitForTerminalText(page, "cwd-after-disconnect /workspace");
+  await waitForTerminalText(page, "fs-after-detach False");
+  await waitForTerminalText(page, "cwd-after-detach /workspace");
 
   if (await grantedFileExists(page, "sandbox-only.txt")) {
-    throw new Error("Expected normal open() after disconnect to stay in the browser workspace, not the granted folder.");
+    throw new Error("Expected normal open() after detach to stay in the browser workspace, not the granted folder.");
   }
+
+  await writeGrantedFile(page, seedFilename, divergedDiskSeedSource);
+  await openAirlockPanel(page);
+  await page.getByRole("button", { name: "Turn Sync On" }).click();
+  await page.getByText("Conflict Center", { exact: true }).first().waitFor({ timeout: 20000 });
+
+  await page.getByRole("button", { name: "Keep Local" }).first().click();
+
+  await page.getByRole("button", { name: "Complete Reattach" }).click();
+  await page.getByText("Linked real folder", { exact: true }).first().waitFor({ timeout: 20000 });
+
+  const seedAfterReattach = await readGrantedFile(page, seedFilename);
+  if (seedAfterReattach !== detachedSeedSource) {
+    throw new Error("Expected Keep Local to push the detached version back to disk.");
+  }
+  if (!(await grantedFileExists(page, "shadow-only.py"))) {
+    throw new Error("Expected shadow-only.py to be pushed to disk during reattach.");
+  }
+}
+
+async function verifyUnlink(page) {
+  await openAirlockPanel(page);
+  await page.getByRole("button", { name: "Unlink" }).click();
+  await page.getByText("Airlock shadow workspace saved locally", { exact: true }).first().waitFor({ timeout: 20000 });
+
+  await createFile(page, "local-fs-after-unlink.py");
+  await setEditorValue(
+    page,
+    `from wasmforge_fs import is_connected
+
+print("fs-after-unlink", is_connected())
+`,
+  );
+
+  await clickRun(page);
+  await waitForTerminalText(page, "fs-after-unlink False");
+
 }
 
 async function main() {
@@ -487,15 +581,15 @@ async function main() {
     await ensureWorkspace(page, verificationWorkspace);
 
     await verifyDefaultSandbox(page);
-    await page.getByRole("button", { name: "Connect local folder" }).click();
-    await page.getByText(`Local folder: ${grantedFolderName}`, { exact: false }).waitFor({ timeout: 20000 });
-    await waitForTerminalText(page, `Connected "${grantedFolderName}"`);
+    await page.getByRole("button", { name: "Link local folder" }).first().click();
+    await page.getByText(`Airlock sync on: ${grantedFolderName}`, { exact: false }).first().waitFor({ timeout: 20000 });
     await verifyExplorerBridge(page);
     await verifyPythonBridge(page);
     await verifyNaturalPythonLocalFolder(page);
     await verifyJavaScriptBridge(page);
     await verifyTypeScriptBridge(page);
-    await verifyDisconnect(page);
+    await verifyDetachAndReattach(page);
+    await verifyUnlink(page);
 
     await page.screenshot({
       path: path.join(artifactsDir, "verify-local-fs-bridge.png"),
@@ -513,7 +607,8 @@ async function main() {
       naturalPythonLocalFolder: "ok",
       javascriptBridge: "ok",
       typescriptBridge: "ok",
-      disconnect: "ok",
+      detachReattach: "ok",
+      unlink: "ok",
       consoleErrors,
     }, null, 2));
   } catch (error) {

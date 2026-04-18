@@ -6,6 +6,13 @@ const WORKSPACE_FILES_DIRECTORY = 'files'
 const WORKSPACE_SQLITE_DIRECTORY = 'sqlite'
 const stagedWrites = new Map()
 let operationQueue = Promise.resolve()
+const PATH_COMPARATOR = (left, right) => (
+  left === right
+    ? 0
+    : left < right
+      ? -1
+      : 1
+)
 
 function normalizeWorkspaceName(workspaceName) {
   const normalized = String(workspaceName ?? '').trim()
@@ -21,22 +28,66 @@ function normalizeWorkspaceName(workspaceName) {
   return normalized
 }
 
-function normalizeFilename(filename) {
-  const normalized = String(filename || '')
+function normalizeFilenameInput(filename) {
+  const normalized = String(filename ?? '')
+    .replace(/\\/gu, '/')
     .replace(/^\/?workspace\//u, '')
-    .replace(/\\/g, '/')
     .trim()
-    .replace(/^\/+|\/+$/g, '')
+
   if (!normalized) {
     throw new Error('Filename is required')
   }
 
-  const parts = normalized.split('/').filter(Boolean)
-  if (parts.some((part) => part === '.' || part === '..')) {
-    throw new Error('Workspace file paths cannot escape the workspace')
+  return normalized
+}
+
+function normalizeWorkspaceFilename(filename) {
+  const normalized = normalizeFilenameInput(filename)
+
+  if (normalized.startsWith('/')) {
+    throw new Error('Workspace filenames must be relative')
   }
 
-  return parts.join('/')
+  const segments = []
+  for (const segment of normalized.split('/')) {
+    if (!segment || segment === '.') {
+      continue
+    }
+
+    if (segment === '..') {
+      throw new Error('Path traversal is not allowed')
+    }
+
+    segments.push(segment)
+  }
+
+  if (segments.length === 0) {
+    throw new Error('Filename is required')
+  }
+
+  return segments.join('/')
+}
+
+function normalizeFlatFilename(filename) {
+  const normalized = normalizeFilenameInput(filename)
+
+  if (normalized === '.' || normalized === '..') {
+    throw new Error('Filename is required')
+  }
+
+  if (normalized.includes('/')) {
+    throw new Error('Nested paths are not supported in the workspace explorer yet')
+  }
+
+  return normalized
+}
+
+function normalizeFilename(filename, scope = 'workspace') {
+  if (scope === 'workspace') {
+    return normalizeWorkspaceFilename(filename)
+  }
+
+  return normalizeFlatFilename(filename)
 }
 
 function getStagedWriteKey(workspaceName, filename) {
@@ -80,46 +131,64 @@ async function ensureWorkspace(workspaceName) {
   return normalizedWorkspaceName
 }
 
-async function getScopedDirectory(scope = 'workspace', workspaceName) {
-  const workspaceDirectory = await getWorkspaceDirectory(workspaceName, { create: true })
+async function getScopedDirectory(scope = 'workspace', workspaceName, { create = true } = {}) {
+  const workspaceDirectory = await getWorkspaceDirectory(workspaceName, { create })
 
   switch (scope) {
     case 'workspace':
-      return workspaceDirectory.getDirectoryHandle(WORKSPACE_FILES_DIRECTORY, { create: true })
+      return workspaceDirectory.getDirectoryHandle(WORKSPACE_FILES_DIRECTORY, { create })
 
     case 'sqlite':
-      return workspaceDirectory.getDirectoryHandle(WORKSPACE_SQLITE_DIRECTORY, { create: true })
+      return workspaceDirectory.getDirectoryHandle(WORKSPACE_SQLITE_DIRECTORY, { create })
 
     default:
       throw new Error(`Unsupported OPFS scope: ${scope}`)
   }
 }
 
-async function getScopedParentDirectory(filename, {
+async function getWorkspaceFileLocation(normalizedFilename, workspaceName, { create = false } = {}) {
+  let directory = await getScopedDirectory('workspace', workspaceName, { create })
+  const segments = normalizedFilename.split('/')
+  const fileName = segments.pop()
+
+  for (const segment of segments) {
+    directory = await directory.getDirectoryHandle(segment, { create })
+  }
+
+  return {
+    directory,
+    fileName,
+    parentSegments: segments,
+  }
+}
+
+async function getScopedFileHandle(filename, {
   scope = 'workspace',
   workspaceName,
   create = false,
 } = {}) {
-  const directory = await getScopedDirectory(scope, workspaceName)
-  const normalizedFilename = normalizeFilename(filename)
-  const parts = normalizedFilename.split('/')
-  const basename = parts.pop()
-  let currentDirectory = directory
+  const normalizedFilename = normalizeFilename(filename, scope)
 
-  for (const segment of parts) {
-    currentDirectory = await currentDirectory.getDirectoryHandle(segment, { create })
+  if (scope === 'workspace') {
+    const { directory, fileName, parentSegments } = await getWorkspaceFileLocation(
+      normalizedFilename,
+      workspaceName,
+      { create },
+    )
+
+    return {
+      normalizedFilename,
+      parentSegments,
+      fileHandle: await directory.getFileHandle(fileName, { create }),
+    }
   }
 
+  const directory = await getScopedDirectory(scope, workspaceName, { create })
   return {
-    directory: currentDirectory,
-    basename,
-    path: normalizedFilename,
+    normalizedFilename,
+    parentSegments: [],
+    fileHandle: await directory.getFileHandle(normalizedFilename, { create }),
   }
-}
-
-async function getScopedFileHandle(filename, options = {}) {
-  const { directory, basename } = await getScopedParentDirectory(filename, options)
-  return directory.getFileHandle(basename, { create: Boolean(options.create) })
 }
 
 function getScheduledWrite(workspaceName, filename) {
@@ -160,8 +229,12 @@ function takeScheduledWrite(workspaceName, filename) {
 }
 
 async function writeFile(filename, content, scope = 'workspace', workspaceName) {
-  const normalizedFilename = normalizeFilename(filename)
-  const fileHandle = await getScopedFileHandle(normalizedFilename, {
+  const normalizedFilename = normalizeFilename(filename, scope)
+  if (scope === 'workspace') {
+    clearScheduledWrite(workspaceName, normalizedFilename)
+  }
+
+  const { fileHandle } = await getScopedFileHandle(normalizedFilename, {
     scope,
     workspaceName,
     create: true,
@@ -181,8 +254,8 @@ async function writeFile(filename, content, scope = 'workspace', workspaceName) 
 }
 
 async function writeBinaryFile(filename, content, scope = 'sqlite', workspaceName) {
-  const normalizedFilename = normalizeFilename(filename)
-  const fileHandle = await getScopedFileHandle(normalizedFilename, {
+  const normalizedFilename = normalizeFilename(filename, scope)
+  const { fileHandle } = await getScopedFileHandle(normalizedFilename, {
     scope,
     workspaceName,
     create: true,
@@ -204,7 +277,7 @@ async function writeBinaryFile(filename, content, scope = 'sqlite', workspaceNam
 }
 
 async function readFile(filename, scope = 'workspace', workspaceName) {
-  const normalizedFilename = normalizeFilename(filename)
+  const normalizedFilename = normalizeFilename(filename, scope)
   const stagedWrite = scope === 'workspace'
     ? getScheduledWrite(workspaceName, normalizedFilename)
     : null
@@ -212,7 +285,7 @@ async function readFile(filename, scope = 'workspace', workspaceName) {
     return stagedWrite.content
   }
 
-  const fileHandle = await getScopedFileHandle(normalizedFilename, { scope, workspaceName })
+  const { fileHandle } = await getScopedFileHandle(normalizedFilename, { scope, workspaceName })
   const access = await fileHandle.createSyncAccessHandle()
 
   try {
@@ -226,8 +299,8 @@ async function readFile(filename, scope = 'workspace', workspaceName) {
 }
 
 async function readBinaryFile(filename, scope = 'sqlite', workspaceName) {
-  const normalizedFilename = normalizeFilename(filename)
-  const fileHandle = await getScopedFileHandle(normalizedFilename, { scope, workspaceName })
+  const normalizedFilename = normalizeFilename(filename, scope)
+  const { fileHandle } = await getScopedFileHandle(normalizedFilename, { scope, workspaceName })
   const access = await fileHandle.createSyncAccessHandle()
 
   try {
@@ -240,20 +313,37 @@ async function readBinaryFile(filename, scope = 'sqlite', workspaceName) {
   }
 }
 
+async function collectWorkspaceFiles(directory, prefix, filenames) {
+  for await (const [name, handle] of directory.entries()) {
+    const relativePath = prefix ? `${prefix}/${name}` : name
+
+    if (handle.kind === 'file') {
+      filenames.add(relativePath)
+      continue
+    }
+
+    if (handle.kind === 'directory') {
+      await collectWorkspaceFiles(handle, relativePath, filenames)
+    }
+  }
+}
+
 async function listFiles(workspaceName) {
-  const workspace = await getScopedDirectory('workspace', workspaceName)
+  const normalizedWorkspaceName = normalizeWorkspaceName(workspaceName)
+  const workspace = await getScopedDirectory('workspace', normalizedWorkspaceName, { create: true })
   const filenames = new Set()
 
   for (const [stagedWriteKey] of stagedWrites) {
     const parsed = parseStagedWriteKey(stagedWriteKey)
-    if (parsed.workspaceName === normalizeWorkspaceName(workspaceName)) {
+    if (parsed.workspaceName === normalizedWorkspaceName) {
       filenames.add(parsed.filename)
     }
   }
 
-  await collectScopedFiles(workspace, '', filenames)
+  await collectWorkspaceFiles(workspace, '', filenames)
 
-  return Array.from(filenames).sort((left, right) => left.localeCompare(right))
+
+  return Array.from(filenames).sort(PATH_COMPARATOR)
 }
 
 async function collectScopedFiles(directory, basePath, filenames) {
@@ -280,7 +370,7 @@ async function listWorkspaces() {
     }
   }
 
-  return names.sort((left, right) => left.localeCompare(right))
+  return names.sort(PATH_COMPARATOR)
 }
 
 async function fileExists(filename, scope = 'workspace', workspaceName) {
@@ -296,22 +386,72 @@ async function fileExists(filename, scope = 'workspace', workspaceName) {
   }
 }
 
-async function deleteFile(filename, scope = 'workspace', workspaceName) {
-  const normalizedFilename = normalizeFilename(filename)
-  const { directory, basename } = await getScopedParentDirectory(normalizedFilename, {
-    scope,
-    workspaceName,
-  })
-  if (scope === 'workspace') {
-    clearScheduledWrite(workspaceName, normalizedFilename)
+async function pruneEmptyWorkspaceDirectories(workspaceName, parentSegments) {
+  if (!parentSegments.length) {
+    return
   }
 
+  const workspaceRoot = await getScopedDirectory('workspace', workspaceName, { create: false })
+  let directory = workspaceRoot
+  const ancestors = []
+
+  for (const segment of parentSegments) {
+    directory = await directory.getDirectoryHandle(segment)
+    ancestors.push({ name: segment, handle: directory })
+  }
+
+  for (let index = ancestors.length - 1; index >= 0; index -= 1) {
+    const current = ancestors[index]
+    const parentDirectory = index === 0
+      ? workspaceRoot
+      : ancestors[index - 1].handle
+    const iterator = current.handle.entries()
+    const nextEntry = await iterator.next()
+
+    if (!nextEntry.done) {
+      break
+    }
+
+    try {
+      await parentDirectory.removeEntry(current.name)
+    } catch (error) {
+      if (
+        error?.name === 'NotFoundError'
+        || error?.name === 'InvalidModificationError'
+      ) {
+        break
+      }
+
+      throw error
+    }
+  }
+}
+
+async function deleteFile(filename, scope = 'workspace', workspaceName) {
+  const normalizedFilename = normalizeFilename(filename, scope)
+  const clearedScheduledWrite = scope === 'workspace'
+    ? clearScheduledWrite(workspaceName, normalizedFilename)
+    : false
+
   try {
-    await directory.removeEntry(basename)
+    if (scope === 'workspace') {
+      const { directory, fileName, parentSegments } = await getWorkspaceFileLocation(
+        normalizedFilename,
+        workspaceName,
+        { create: false },
+      )
+
+      await directory.removeEntry(fileName)
+      await pruneEmptyWorkspaceDirectories(workspaceName, parentSegments)
+    } else {
+      const directory = await getScopedDirectory(scope, workspaceName, { create: false })
+      await directory.removeEntry(normalizedFilename)
+    }
+
     return { ok: true, deleted: true }
   } catch (error) {
     if (error?.name === 'NotFoundError') {
-      return { ok: true, deleted: false }
+      return { ok: true, deleted: clearedScheduledWrite }
     }
 
     throw error
@@ -319,8 +459,8 @@ async function deleteFile(filename, scope = 'workspace', workspaceName) {
 }
 
 async function renameFile(filename, nextFilename, workspaceName) {
-  const normalizedFilename = normalizeFilename(filename)
-  const normalizedNextFilename = normalizeFilename(nextFilename)
+  const normalizedFilename = normalizeFilename(filename, 'workspace')
+  const normalizedNextFilename = normalizeFilename(nextFilename, 'workspace')
 
   if (normalizedFilename === normalizedNextFilename) {
     return { ok: true, filename: normalizedNextFilename }

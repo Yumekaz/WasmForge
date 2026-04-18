@@ -17,7 +17,7 @@ export default defineConfig({
       manifest: {
         name: 'WasmForge',
         short_name: 'WasmForge',
-        description: 'Your entire dev environment. One browser tab. Zero servers.',
+        description: 'Your entire dev environment. One browser tab. Zero cloud servers.',
         theme_color: '#09090b',
         background_color: '#09090b',
         display: 'standalone',

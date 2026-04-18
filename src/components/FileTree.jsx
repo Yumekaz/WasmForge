@@ -337,7 +337,7 @@ function FileTree({
             ref={workspaceButtonRef}
             type="button"
             aria-label="Workspace switcher"
-            title={workspaceLocked ? `${activeWorkspace} is connected from a selected local folder` : activeWorkspace}
+            title={workspaceLocked ? `${activeWorkspace} is linked through Airlock` : activeWorkspace}
             disabled={disabled || workspaceLocked}
             onClick={() => {
               if (disabled || workspaceLocked) {
@@ -647,9 +647,11 @@ function FileTree({
           <div style={{ padding: "18px 12px", color: "var(--ide-shell-muted)", fontSize: "12px", lineHeight: 1.55 }}>
             Create a file to begin.
             <div style={{ marginTop: "6px", color: "var(--ide-shell-muted-strong)", fontSize: "11px" }}>
-              {storageLabel === "Selected local folder"
-                ? "Files save directly to the folder you granted."
-                : "Files and runtime data persist locally."}
+              {storageLabel === "Linked real folder"
+                ? "Files save directly into the linked folder."
+                : storageLabel === "Detached local shadow"
+                  ? "Files save into the detached Airlock shadow workspace until you reattach."
+                  : "Files and runtime data persist locally."}
             </div>
           </div>
         ) : null}
@@ -1166,10 +1168,26 @@ function getFileMeta(filename, kind = "file", supported = true) {
   const extension = basename.split(".").pop()?.toLowerCase() || "";
 
   switch (extension) {
+    case "c":
+    case "h":
+      return { label: "C", accent: "var(--ide-file-ts-accent)", surface: "var(--ide-file-ts-surface)" };
+    case "cc":
+    case "cpp":
+    case "cxx":
+    case "hh":
+    case "hpp":
+    case "hxx":
+      return { label: "C++", accent: "var(--ide-file-js-accent)", surface: "var(--ide-file-js-surface)" };
+    case "go":
+      return { label: "GO", accent: "var(--ide-file-ts-accent)", surface: "var(--ide-file-ts-surface)" };
+    case "java":
+      return { label: "JV", accent: "var(--ide-file-pg-accent)", surface: "var(--ide-file-pg-surface)" };
     case "py":
       return { label: "PY", accent: "var(--ide-file-py-accent)", surface: "var(--ide-file-py-surface)" };
     case "js":
       return { label: "JS", accent: "var(--ide-file-js-accent)", surface: "var(--ide-file-js-surface)" };
+    case "rs":
+      return { label: "RS", accent: "var(--ide-file-pg-accent)", surface: "var(--ide-file-pg-surface)" };
     case "ts":
       return { label: "TS", accent: "var(--ide-file-ts-accent)", surface: "var(--ide-file-ts-surface)" };
     case "sql":
@@ -1178,6 +1196,8 @@ function getFileMeta(filename, kind = "file", supported = true) {
       return { label: "PG", accent: "var(--ide-file-pg-accent)", surface: "var(--ide-file-pg-surface)" };
     case "wfnb":
       return { label: "NB", accent: "var(--ide-file-py-accent)", surface: "var(--ide-file-py-surface)" };
+    case "zig":
+      return { label: "ZG", accent: "var(--ide-file-sql-accent)", surface: "var(--ide-file-sql-surface)" };
     default:
       return { label: "TXT", accent: "var(--ide-file-txt-accent)", surface: "var(--ide-file-txt-surface)" };
   }
