@@ -15,6 +15,9 @@ function FileTree({
   onCreateNotebook,
   onRenameFile,
   onDeleteFile,
+  workspaceLocked = false,
+  storageLabel = "Stored locally",
+  footerLabel = "Saved locally",
   disabled = false,
 }) {
   const [isCreating, setIsCreating] = useState(false);
@@ -140,11 +143,11 @@ function FileTree({
   }, []);
 
   useEffect(() => {
-    if (disabled) {
+    if (disabled || workspaceLocked) {
       setContextMenu(null);
       setWorkspaceMenuOpen(false);
     }
-  }, [disabled]);
+  }, [disabled, workspaceLocked]);
 
   useEffect(() => {
     if (editingName && !files.some((file) => file.name === editingName)) {
@@ -296,17 +299,17 @@ function FileTree({
             ref={workspaceButtonRef}
             type="button"
             aria-label="Workspace switcher"
-            title={activeWorkspace}
-            disabled={disabled}
+            title={workspaceLocked ? `${activeWorkspace} is connected from a selected local folder` : activeWorkspace}
+            disabled={disabled || workspaceLocked}
             onClick={() => {
-              if (disabled) {
+              if (disabled || workspaceLocked) {
                 return;
               }
               setContextMenu(null);
               setWorkspaceFeedback("");
               setWorkspaceMenuOpen((prev) => !prev);
             }}
-            style={workspaceCardButtonStyle(disabled)}
+            style={workspaceCardButtonStyle(disabled || workspaceLocked)}
           >
             <div style={workspaceCardLabelStyle}>Workspace</div>
             <div
@@ -329,7 +332,7 @@ function FileTree({
                 {orderedFiles.length} file{orderedFiles.length === 1 ? "" : "s"}
               </span>
               <span style={workspaceCardDotStyle} />
-              <span>Stored locally</span>
+              <span>{storageLabel}</span>
             </div>
           </button>
 
@@ -463,7 +466,7 @@ function FileTree({
           </div>
         ) : null}
 
-        {workspaceMenuOpen ? (
+        {workspaceMenuOpen && !workspaceLocked ? (
           <div ref={workspaceMenuRef} style={workspaceMenuStyle}>
             <div style={menuSectionLabelStyle}>Workspaces</div>
 
@@ -600,7 +603,9 @@ function FileTree({
           <div style={{ padding: "18px 12px", color: "var(--ide-shell-muted)", fontSize: "12px", lineHeight: 1.55 }}>
             Create a file to begin.
             <div style={{ marginTop: "6px", color: "var(--ide-shell-muted-strong)", fontSize: "11px" }}>
-              Files and runtime data persist locally.
+              {storageLabel === "Selected local folder"
+                ? "Files save directly to the folder you granted."
+                : "Files and runtime data persist locally."}
             </div>
           </div>
         ) : null}
@@ -682,7 +687,7 @@ function FileTree({
           }}
         >
           <span style={{ width: "8px", height: "2px", borderRadius: "1px", background: "var(--ide-shell-success)", flexShrink: 0 }} />
-          Saved locally
+          {footerLabel}
         </div>
       </div>
 

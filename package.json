@@ -12,8 +12,9 @@
     "verify:share": "node scripts/verify-share.mjs",
     "verify:mobile": "node scripts/verify-mobile-ui.mjs",
     "verify:parallel": "node scripts/verify-parallel-workers.mjs",
+    "verify:local-fs": "node scripts/verify-local-fs-bridge.mjs",
     "verify:claims": "node scripts/verify-claims.mjs",
-    "verify:all": "npm run verify:ide && npm run verify:parallel && npm run verify:notebook && npm run verify:share && npm run verify:mobile && npm run verify:claims"
+    "verify:all": "npm run verify:ide && npm run verify:parallel && npm run verify:local-fs && npm run verify:notebook && npm run verify:share && npm run verify:mobile && npm run verify:claims"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.4.2",

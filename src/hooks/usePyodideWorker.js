@@ -20,6 +20,7 @@ function canUseSharedStdin() {
 
 export function usePyodideWorker({
   workspaceName = 'python-experiments',
+  localFolderHandle = null,
   onStdout,
   onStderr,
   onFigures,
@@ -38,6 +39,7 @@ export function usePyodideWorker({
   const stdinBytesViewRef = useRef(null)
   const pendingNotebookRunRef = useRef(null)
   const pendingNotebookResetRef = useRef(null)
+  const localFolderHandleRef = useRef(localFolderHandle)
   const onStdoutRef = useRef(onStdout)
   const onStderrRef = useRef(onStderr)
   const onFiguresRef = useRef(onFigures)
@@ -118,6 +120,14 @@ export function usePyodideWorker({
   useEffect(() => {
     onStdinRequestRef.current = onStdinRequest
   }, [onStdinRequest])
+
+  useEffect(() => {
+    localFolderHandleRef.current = localFolderHandle || null
+    workerRef.current?.postMessage({
+      type: 'set_local_folder',
+      localFolderHandle: localFolderHandle || null,
+    })
+  }, [localFolderHandle])
 
   const clearWatchdog = useCallback(() => {
     if (watchdogRef.current) {
@@ -308,6 +318,7 @@ export function usePyodideWorker({
       baseUrl: BASE_URL,
       stdinBuffer: createStdinChannel(),
       workspaceName,
+      localFolderHandle: localFolderHandleRef.current,
     })
   }, [clearWatchdog, createStdinChannel, resetWatchdog, resolvePendingNotebookReset, resolvePendingNotebookRun, settlePendingNotebookActions, stdinSupported, workspaceName])
 
@@ -337,6 +348,7 @@ export function usePyodideWorker({
       type: 'run',
       code: execution.code,
       filename: execution.filename,
+      localFolderHandle: localFolderHandleRef.current,
     })
   }, [clearStdinSignal, isReady, isRunning, resetWatchdog])
 
@@ -414,6 +426,7 @@ export function usePyodideWorker({
         type: 'reset_notebook_session',
         notebookKey,
         filename,
+        localFolderHandle: localFolderHandleRef.current,
       })
     })
   }, [clearStdinSignal, isReady, isRunning, resetWatchdog])
@@ -443,6 +456,7 @@ export function usePyodideWorker({
         filename,
         cellId,
         code,
+        localFolderHandle: localFolderHandleRef.current,
       })
     })
   }, [clearStdinSignal, isReady, isRunning, resetWatchdog])

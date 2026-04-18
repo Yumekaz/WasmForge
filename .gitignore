@@ -12,3 +12,6 @@ preview*.log
 .DS_Store
 WasmForge_WhatToBuild.md
 wasmforge-v3.html
+FUTURE_WASMFORGE_TASKS.md
+LANGUAGE_EXAMPLES.md
+TEAM_CONTRIBUTIONS.md

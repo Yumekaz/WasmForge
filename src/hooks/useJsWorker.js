@@ -7,6 +7,7 @@ function createIdleStatus() {
 }
 
 export function useJsWorker({
+  localFolderHandle = null,
   onStdout,
   onStderr,
   onReady,
@@ -22,6 +23,7 @@ export function useJsWorker({
   const onReadyRef = useRef(onReady)
   const onDoneRef = useRef(onDone)
   const onProgressRef = useRef(onProgress)
+  const localFolderHandleRef = useRef(localFolderHandle)
   const [isReady, setIsReady] = useState(false)
   const [isRunning, setIsRunning] = useState(false)
   const [status, setStatus] = useState(createIdleStatus)
@@ -45,6 +47,14 @@ export function useJsWorker({
   useEffect(() => {
     onProgressRef.current = onProgress
   }, [onProgress])
+
+  useEffect(() => {
+    localFolderHandleRef.current = localFolderHandle || null
+    workerRef.current?.postMessage({
+      type: 'set_local_folder',
+      localFolderHandle: localFolderHandle || null,
+    })
+  }, [localFolderHandle])
 
   const clearScheduledRespawn = useCallback(() => {
     if (respawnTimeoutRef.current) {
@@ -151,7 +161,10 @@ export function useJsWorker({
     }
 
     workerRef.current = worker
-    worker.postMessage({ type: 'init' })
+    worker.postMessage({
+      type: 'init',
+      localFolderHandle: localFolderHandleRef.current,
+    })
   }, [clearScheduledRespawn, scheduleRespawn])
 
   spawnWorkerRef.current = spawnWorker
@@ -179,6 +192,7 @@ export function useJsWorker({
       type: 'run',
       code: execution.code,
       filename: execution.filename || DEFAULT_FILENAME,
+      localFolderHandle: localFolderHandleRef.current,
     })
   }, [isReady, isRunning])
 

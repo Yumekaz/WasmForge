@@ -5,6 +5,9 @@ let stderrBuffer = ''
 let flushInterval = null
 let workspaceHandle = null
 let workspaceMount = null
+let localFolderHandle = null
+let localFolderMount = null
+let localFolderName = ''
 let stdinBuffer = null
 let stdinSignalView = null
 let stdinBytesView = null
@@ -22,6 +25,7 @@ const STDIN_HEADER_INTS = 2
 const STDIN_HEADER_BYTES = Int32Array.BYTES_PER_ELEMENT * STDIN_HEADER_INTS
 const MAX_PARALLEL_WORKERS = 4
 const PARALLEL_TASK_TIMEOUT_MS = 90_000
+const LOCAL_FOLDER_MOUNT_PATH = '/local'
 const PACKAGE_IMPORT_PATTERNS = [
   { packageName: 'pandas', pattern: /^\s*(?:from\s+pandas\b|import\s+pandas\b)/m },
   { packageName: 'numpy', pattern: /^\s*(?:from\s+numpy\b|import\s+numpy\b)/m },
@@ -135,16 +139,103 @@ function normalizeWorkspaceName(name) {
   return normalized
 }
 
+function updateLocalFolderPythonState(connected, name = localFolderName) {
+  if (!pyodide) {
+    return
+  }
+
+  pyodide.globals.set('_wasmforgeLocalFolderConnected', Boolean(connected))
+  pyodide.globals.set('_wasmforgeLocalFolderName', String(name || ''))
+  pyodide.runPython(`
+import builtins
+
+builtins._wasmforge_local_folder_connected = bool(_wasmforgeLocalFolderConnected)
+builtins._wasmforge_local_folder_name = str(_wasmforgeLocalFolderName)
+  `)
+}
+
+function ensureLocalFolderMountPoint() {
+  try {
+    pyodide.FS.mkdirTree(LOCAL_FOLDER_MOUNT_PATH)
+  } catch {
+    // Directory already exists or the runtime will report the mount failure below.
+  }
+}
+
+async function unmountLocalFolder() {
+  if (!pyodide) {
+    localFolderMount = null
+    return
+  }
+
+  if (localFolderMount) {
+    try {
+      pyodide.FS.unmount(LOCAL_FOLDER_MOUNT_PATH)
+    } catch {
+      // Treat stale or already-unmounted folders as disconnected.
+    }
+  }
+
+  localFolderMount = null
+  updateLocalFolderPythonState(false)
+}
+
+async function setLocalFolderHandle(handle) {
+  const nextHandle = handle || null
+  if (nextHandle === localFolderHandle) {
+    return
+  }
+
+  await unmountLocalFolder()
+  localFolderHandle = nextHandle
+  localFolderName = nextHandle?.name || ''
+  updateLocalFolderPythonState(false)
+}
+
+async function mountLocalFolder() {
+  if (!localFolderHandle) {
+    updateLocalFolderPythonState(false)
+    return false
+  }
+
+  if (localFolderMount) {
+    updateLocalFolderPythonState(true)
+    return true
+  }
+
+  try {
+    ensureLocalFolderMountPoint()
+    localFolderMount = await pyodide.mountNativeFS(LOCAL_FOLDER_MOUNT_PATH, localFolderHandle)
+    updateLocalFolderPythonState(true)
+    return true
+  } catch (err) {
+    localFolderMount = null
+    updateLocalFolderPythonState(false)
+    throw new Error(
+      `[Local folder] Could not mount "${localFolderName || 'selected folder'}": ${err?.message || err}`
+    )
+  }
+}
+
+async function persistLocalFolderToDisk() {
+  if (localFolderMount) {
+    await localFolderMount.syncfs()
+  }
+}
+
 function initWorker({
   stdinBuffer: incomingStdinBuffer,
   baseUrl: incomingBaseUrl,
   workspaceName,
+  localFolderHandle: incomingLocalFolderHandle,
 } = {}) {
   if (typeof incomingBaseUrl === 'string' && incomingBaseUrl.length > 0) {
     baseUrl = incomingBaseUrl
   }
 
   activeWorkspaceName = normalizeWorkspaceName(workspaceName)
+  localFolderHandle = incomingLocalFolderHandle || null
+  localFolderName = localFolderHandle?.name || ''
 
   const hasSharedArrayBuffer =
     typeof SharedArrayBuffer === 'function' &&
@@ -653,6 +744,8 @@ import types
 
 builtins._wasmforge_display_payloads = []
 builtins._wasmforge_notebook_sessions = {}
+builtins._wasmforge_local_folder_connected = False
+builtins._wasmforge_local_folder_name = ""
 
 class _WasmForgeStdout:
     def write(self, s):
@@ -811,6 +904,91 @@ builtins._wasmforge_collect_displays = _wasmforge_collect_displays
 builtins._wasmforge_reset_notebook_session = _wasmforge_reset_notebook_session
 builtins._wasmforge_run_notebook_cell = _wasmforge_run_notebook_cell
 
+wasmforge_fs = types.ModuleType("wasmforge_fs")
+
+def _wasmforge_fs_normalize_path(path, allow_root=False):
+    import posixpath
+
+    raw = str(path if path is not None else "")
+    if chr(92) in raw:
+        raise ValueError("Local folder paths must use '/' separators")
+
+    stripped = raw.strip()
+    if not stripped:
+        if allow_root:
+            return "."
+        raise ValueError("Local folder path cannot be empty")
+
+    if stripped.startswith("/") or stripped.startswith("~"):
+        raise ValueError("Local folder paths must be relative")
+
+    normalized = posixpath.normpath(stripped)
+    if normalized == ".":
+        if allow_root:
+            return "."
+        raise ValueError("Local folder path must name a file")
+
+    if normalized == ".." or normalized.startswith("../"):
+        raise ValueError("Local folder path cannot escape the selected folder")
+
+    return normalized
+
+def _wasmforge_fs_full_path(path, allow_root=False):
+    if not builtins._wasmforge_local_folder_connected:
+        raise RuntimeError("No local folder connected. Click Connect Folder first.")
+
+    safe_path = _wasmforge_fs_normalize_path(path, allow_root=allow_root)
+    if safe_path == ".":
+        return safe_path, "/local"
+
+    return safe_path, "/local/" + safe_path
+
+def _wasmforge_fs_is_connected():
+    return bool(builtins._wasmforge_local_folder_connected)
+
+def _wasmforge_fs_local_root():
+    return str(builtins._wasmforge_local_folder_name or "")
+
+def _wasmforge_fs_read_text(path, encoding="utf-8"):
+    safe_path, full_path = _wasmforge_fs_full_path(path)
+    with open(full_path, "r", encoding=encoding) as file:
+        return file.read()
+
+def _wasmforge_fs_write_text(path, text, encoding="utf-8"):
+    import os
+
+    safe_path, full_path = _wasmforge_fs_full_path(path)
+    parent = os.path.dirname(full_path)
+    if parent and parent != "/local":
+        os.makedirs(parent, exist_ok=True)
+
+    with open(full_path, "w", encoding=encoding) as file:
+        file.write(str(text))
+
+    postStdout(f"[Local folder] Wrote {safe_path}\\n")
+    return safe_path
+
+def _wasmforge_fs_list_files(path="."):
+    import os
+
+    safe_path, full_path = _wasmforge_fs_full_path(path, allow_root=True)
+    names = sorted(os.listdir(full_path))
+    return names
+
+def _wasmforge_fs_help():
+    return (
+        "Use read_text(path), write_text(path, text), list_files(path='.'), "
+        "is_connected(), and local_root(). Paths are relative to the folder you granted."
+    )
+
+wasmforge_fs.is_connected = _wasmforge_fs_is_connected
+wasmforge_fs.local_root = _wasmforge_fs_local_root
+wasmforge_fs.read_text = _wasmforge_fs_read_text
+wasmforge_fs.write_text = _wasmforge_fs_write_text
+wasmforge_fs.list_files = _wasmforge_fs_list_files
+wasmforge_fs.help = _wasmforge_fs_help
+sys.modules["wasmforge_fs"] = wasmforge_fs
+
 wasmforge_parallel = types.ModuleType("wasmforge_parallel")
 
 async def _wasmforge_parallel_map(task_source, function_name, inputs, workers=2):
@@ -880,6 +1058,7 @@ async function runPython(code, filename = 'main.py') {
   try {
     await mountWorkspace()
     await syncWorkspaceFromOpfs()
+    await mountLocalFolder()
 
     const workspacePath = `/workspace/${filename}`
     pyodide.FS.writeFile(workspacePath, code, { encoding: 'utf8' })
@@ -954,6 +1133,14 @@ await eval_code_async(
       error ||= syncMessage.trim()
     }
 
+    try {
+      await persistLocalFolderToDisk()
+    } catch (syncErr) {
+      const syncMessage = `[WasmForge] Failed to sync local folder: ${syncErr.message || syncErr}\n`
+      self.postMessage({ type: 'stderr', data: `\n${syncMessage}` })
+      error ||= syncMessage.trim()
+    }
+
     stopHeartbeat()
     stopFlushInterval()
     activeExecutionMode = 'script'
@@ -1005,6 +1192,7 @@ async function runNotebookCell({
   try {
     await mountWorkspace()
     await syncWorkspaceFromOpfs()
+    await mountLocalFolder()
 
     const packageState = await ensureLocalPackages(code, filename)
     usesMatplotlib = packageState.usesMatplotlib
@@ -1066,6 +1254,15 @@ builtins._wasmforge_run_notebook_cell(
       error ||= syncMessage.trim()
     }
 
+    try {
+      await persistLocalFolderToDisk()
+    } catch (syncErr) {
+      const syncMessage = `[WasmForge] Failed to sync local folder: ${syncErr.message || syncErr}\n`
+      stderrBuffer += `\n${syncMessage}`
+      notebookStderrBuffer += `\n${syncMessage}`
+      error ||= syncMessage.trim()
+    }
+
     stopHeartbeat()
     stopFlushInterval()
     activeExecutionMode = 'script'
@@ -1095,6 +1292,7 @@ self.onmessage = async (event) => {
     stdinBuffer: incomingStdinBuffer,
     baseUrl: incomingBaseUrl,
     workspaceName,
+    localFolderHandle: incomingLocalFolderHandle,
   } = event.data
 
   switch (type) {
@@ -1103,14 +1301,21 @@ self.onmessage = async (event) => {
         stdinBuffer: incomingStdinBuffer,
         baseUrl: incomingBaseUrl,
         workspaceName,
+        localFolderHandle: incomingLocalFolderHandle,
       })
       break
 
+    case 'set_local_folder':
+      await setLocalFolderHandle(incomingLocalFolderHandle)
+      break
+
     case 'run':
+      await setLocalFolderHandle(incomingLocalFolderHandle)
       await runPython(code, filename)
       break
 
     case 'run_notebook_cell':
+      await setLocalFolderHandle(incomingLocalFolderHandle)
       await runNotebookCell({
         notebookKey,
         code,
@@ -1121,6 +1326,8 @@ self.onmessage = async (event) => {
 
     case 'reset_notebook_session':
       try {
+        await setLocalFolderHandle(incomingLocalFolderHandle)
+
         if (initializationPromise) {
           await initializationPromise
         }

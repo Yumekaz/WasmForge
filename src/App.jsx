@@ -89,6 +89,25 @@ def build_report(name):
         "airplane-mode demo ready",
     ]
 `;
+const LOCAL_FOLDER_TEXT_EXTENSIONS = new Set([
+  "",
+  "css",
+  "csv",
+  "html",
+  "js",
+  "json",
+  "md",
+  "pg",
+  "py",
+  "sql",
+  "toml",
+  "ts",
+  "txt",
+  "wfnb",
+  "xml",
+  "yaml",
+  "yml",
+]);
 const Editor = lazy(() => import("./components/Editor.jsx"));
 
 const IDE_THEME_PALETTES = {
@@ -256,6 +275,68 @@ function normalizeWorkspaceFilename(name) {
     throw new Error("Nested folders are not supported yet. Use a single file name.");
   }
   return normalized;
+}
+
+function isLocalFolderTextFileName(name) {
+  const normalized = String(name ?? "").trim();
+  if (!normalized || normalized.startsWith(".") || normalized.includes("/") || normalized.includes("\\")) {
+    return false;
+  }
+
+  const extension = normalized.includes(".")
+    ? normalized.split(".").pop()?.toLowerCase() || ""
+    : "";
+  return LOCAL_FOLDER_TEXT_EXTENSIONS.has(extension);
+}
+
+async function listLocalFolderTextFiles(directoryHandle) {
+  if (!directoryHandle) {
+    return [];
+  }
+
+  const filenames = [];
+  for await (const [name, handle] of directoryHandle.entries()) {
+    if (handle.kind === "file" && isLocalFolderTextFileName(name)) {
+      filenames.push(name);
+    }
+  }
+
+  return filenames.sort((left, right) => left.localeCompare(right));
+}
+
+async function readLocalFolderTextFile(directoryHandle, filename) {
+  const normalized = normalizeWorkspaceFilename(filename);
+  const fileHandle = await directoryHandle.getFileHandle(normalized);
+  const file = await fileHandle.getFile();
+  return file.text();
+}
+
+async function writeLocalFolderTextFile(directoryHandle, filename, content) {
+  const normalized = normalizeWorkspaceFilename(filename);
+  const fileHandle = await directoryHandle.getFileHandle(normalized, { create: true });
+  const writable = await fileHandle.createWritable();
+
+  try {
+    await writable.write(String(content ?? ""));
+  } finally {
+    await writable.close();
+  }
+
+  return normalized;
+}
+
+async function deleteLocalFolderTextFile(directoryHandle, filename) {
+  const normalized = normalizeWorkspaceFilename(filename);
+  await directoryHandle.removeEntry(normalized);
+}
+
+async function renameLocalFolderTextFile(directoryHandle, currentName, nextName) {
+  const normalizedCurrentName = normalizeWorkspaceFilename(currentName);
+  const normalizedNextName = normalizeWorkspaceFilename(nextName);
+  const content = await readLocalFolderTextFile(directoryHandle, normalizedCurrentName);
+  await writeLocalFolderTextFile(directoryHandle, normalizedNextName, content);
+  await deleteLocalFolderTextFile(directoryHandle, normalizedCurrentName);
+  return normalizedNextName;
 }
 
 function normalizeWorkspaceName(name) {
@@ -775,6 +856,10 @@ export default function App({ onNavigateHome }) {
   const [offlineProofVisible, setOfflineProofVisible] = useState(false);
   const [offlineProofState, setOfflineProofState] = useState(createInitialOfflineProofState);
   const [isPreparingOfflineProof, setIsPreparingOfflineProof] = useState(false);
+  const [localFolderBridge, setLocalFolderBridge] = useState({
+    handle: null,
+    name: "",
+  });
   const [shareHashSignal, setShareHashSignal] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(
     typeof window === "undefined" ? 1280 : window.innerWidth,
@@ -793,6 +878,8 @@ export default function App({ onNavigateHome }) {
   const activeWorkspaceRef = useRef(activeWorkspace);
   const isMountedRef = useRef(true);
   const recoveryWritesRef = useRef(readRecoveryEntries(activeWorkspace));
+  const localFolderBridgeRef = useRef(localFolderBridge);
+  const localFolderWriteQueueRef = useRef(Promise.resolve());
   const shareStatusTimeoutRef = useRef(null);
   const shareImportKeyRef = useRef("");
   const ideTheme = theme;
@@ -900,6 +987,10 @@ export default function App({ onNavigateHome }) {
       window.localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, activeWorkspace);
     }
   }, [activeWorkspace]);
+
+  useEffect(() => {
+    localFolderBridgeRef.current = localFolderBridge;
+  }, [localFolderBridge]);
 
   const requestTerminalResize = useCallback(() => {
     if (typeof window === "undefined") {
@@ -1204,6 +1295,60 @@ export default function App({ onNavigateHome }) {
     });
   }, []);
 
+  const enqueueLocalFolderWrite = useCallback(
+    (filename, content, folderHandle = localFolderBridgeRef.current.handle) => {
+      if (!folderHandle) {
+        return Promise.resolve();
+      }
+
+      const writeTask = localFolderWriteQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          await writeLocalFolderTextFile(folderHandle, filename, content);
+          clearRecoveryWrite(filename);
+        });
+
+      localFolderWriteQueueRef.current = writeTask;
+      return writeTask;
+    },
+    [clearRecoveryWrite],
+  );
+
+  const flushLocalFolderEditorSnapshot = useCallback(
+    async (snapshot = getActiveEditorSnapshot()) => {
+      const folderHandle = localFolderBridgeRef.current.handle;
+      if (!folderHandle) {
+        return;
+      }
+
+      if (snapshot) {
+        await enqueueLocalFolderWrite(snapshot.filename, snapshot.content, folderHandle);
+      }
+
+      await localFolderWriteQueueRef.current;
+    },
+    [enqueueLocalFolderWrite, getActiveEditorSnapshot],
+  );
+
+  const reportLocalFolderWriteError = useCallback(
+    (error) => {
+      reportWorkspaceError(`[Local folder] Save failed: ${error?.message || error}`);
+    },
+    [reportWorkspaceError],
+  );
+
+  const flushCurrentStorageWrites = useCallback(
+    async (snapshot = getActiveEditorSnapshot()) => {
+      if (localFolderBridgeRef.current.handle) {
+        await flushLocalFolderEditorSnapshot(snapshot);
+        return;
+      }
+
+      await flushAllWrites();
+    },
+    [flushAllWrites, flushLocalFolderEditorSnapshot, getActiveEditorSnapshot],
+  );
+
   const recoverPendingWrites = useCallback(async (workspaceName = activeWorkspaceRef.current) => {
     const entries = Object.entries(readRecoveryEntries(workspaceName));
 
@@ -1213,7 +1358,7 @@ export default function App({ onNavigateHome }) {
     }
   }, [clearRecoveryWrite, writeFile]);
 
-  const refreshWorkspaceFiles = useCallback(
+  const refreshBrowserWorkspaceFiles = useCallback(
     async (preferredFile = activeFileRef.current, options = {}) => {
       const {
         createDefaultIfEmpty = false,
@@ -1282,6 +1427,63 @@ export default function App({ onNavigateHome }) {
     },
     [listFiles, readFile, replaceFileList, upsertFileContent, writeFile],
   );
+
+  const refreshLocalFolderFiles = useCallback(
+    async (folderHandle, preferredFile = activeFileRef.current) => {
+      const activeHandle = folderHandle || localFolderBridgeRef.current.handle;
+      if (!activeHandle) {
+        return;
+      }
+
+      setIsActiveFileLoading(true);
+
+      try {
+        const filenames = await listLocalFolderTextFiles(activeHandle);
+
+        if (activeHandle !== localFolderBridgeRef.current.handle) {
+          return;
+        }
+
+        replaceFileList(filenames);
+
+        if (filenames.length === 0) {
+          setOpenFiles([]);
+          setActiveFile("");
+          return;
+        }
+
+        const nextActiveFile = chooseActiveFile(filenames, preferredFile);
+        const content = await readLocalFolderTextFile(activeHandle, nextActiveFile);
+
+        if (activeHandle !== localFolderBridgeRef.current.handle) {
+          return;
+        }
+
+        setActiveFile(nextActiveFile);
+        upsertFileContent(nextActiveFile, content);
+      } finally {
+        if (activeHandle === localFolderBridgeRef.current.handle) {
+          setIsActiveFileLoading(false);
+        }
+      }
+    },
+    [replaceFileList, upsertFileContent],
+  );
+
+  const refreshWorkspaceFiles = useCallback(
+    async (preferredFile = activeFileRef.current, options = {}) => {
+      const workspaceName = options.workspaceName ?? activeWorkspaceRef.current;
+      const localFolderHandle = localFolderBridgeRef.current.handle;
+
+      if (localFolderHandle && workspaceName === activeWorkspaceRef.current) {
+        await refreshLocalFolderFiles(localFolderHandle, preferredFile);
+        return;
+      }
+
+      await refreshBrowserWorkspaceFiles(preferredFile, options);
+    },
+    [refreshBrowserWorkspaceFiles, refreshLocalFolderFiles],
+  );
   const handlePythonDone = useCallback(
     (doneResult = {}) => {
       const error = typeof doneResult === "string" ? doneResult : doneResult?.error;
@@ -1348,9 +1550,12 @@ export default function App({ onNavigateHome }) {
       if (updateState) {
         upsertFileContent(filename, content);
       }
-      stageRecoveryWrite(filename, content);
 
-      if (scheduleWorkerWrite) {
+      if (!localFolderBridgeRef.current.handle) {
+        stageRecoveryWrite(filename, content);
+      }
+
+      if (scheduleWorkerWrite && !localFolderBridgeRef.current.handle) {
         scheduleWrite(filename, content);
       }
 
@@ -1369,7 +1574,7 @@ export default function App({ onNavigateHome }) {
 
       editorSubscriptionRef.current = editor.onDidChangeModelContent(() => {
         const filename = getEditorFilename(editor);
-        if (filename) {
+        if (filename && !localFolderBridgeRef.current.handle) {
           stageRecoveryWrite(filename, editor.getValue());
         }
       });
@@ -1388,6 +1593,7 @@ export default function App({ onNavigateHome }) {
     isAwaitingInput,
   } = usePyodideWorker({
     workspaceName: activeWorkspace,
+    localFolderHandle: localFolderBridge.handle,
     onStdout: writeStdout,
     onStderr: writeStderr,
     onFigures: (figures) => {
@@ -1481,6 +1687,7 @@ export default function App({ onNavigateHome }) {
     isRunning: isJsRunning,
     status: jsStatus,
   } = useJsWorker({
+    localFolderHandle: localFolderBridge.handle,
     onStdout: writeStdout,
     onStderr: writeStderr,
     onReady: () => {
@@ -1833,7 +2040,13 @@ export default function App({ onNavigateHome }) {
 
   useEffect(() => {
     const flushPendingWorkspaceWrites = () => {
-      syncActiveEditorDraft({ scheduleWorkerWrite: false, updateState: false });
+      const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false, updateState: false });
+
+      if (localFolderBridgeRef.current.handle) {
+        void flushLocalFolderEditorSnapshot(snapshot).catch(() => {});
+        return;
+      }
+
       void flushAllWrites().catch(() => {});
     };
 
@@ -1852,7 +2065,7 @@ export default function App({ onNavigateHome }) {
       window.removeEventListener("beforeunload", flushPendingWorkspaceWrites);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [flushAllWrites, syncActiveEditorDraft]);
+  }, [flushAllWrites, flushLocalFolderEditorSnapshot, syncActiveEditorDraft]);
 
   useEffect(() => {
     return () => {
@@ -1869,10 +2082,10 @@ export default function App({ onNavigateHome }) {
         throw new Error(message);
       }
 
-      syncActiveEditorDraft();
-      await flushAllWrites();
+      const snapshot = syncActiveEditorDraft();
+      await flushCurrentStorageWrites(snapshot);
     },
-    [flushAllWrites, isJsRunning, isRunning, isSqlRunning, syncActiveEditorDraft],
+    [flushCurrentStorageWrites, isJsRunning, isRunning, isSqlRunning, syncActiveEditorDraft],
   );
 
   const handlePrepareOfflineProof = useCallback(async () => {
@@ -1973,7 +2186,7 @@ export default function App({ onNavigateHome }) {
     } = options;
     const notebookKey = getNotebookSessionKey(activeWorkspaceRef.current, filename);
 
-    await flushAllWrites();
+    await flushCurrentStorageWrites();
     setStatus("Restarting notebook session...");
 
     if (clearOutputs) {
@@ -2006,7 +2219,7 @@ export default function App({ onNavigateHome }) {
     setStatus("Python notebook ready");
     terminalRef.current?.writeln(`\x1b[32m[Notebook] Python session ready for ${filename}\x1b[0m`);
     return { error: "" };
-  }, [flushAllWrites, resetNotebookSessionInWorker]);
+  }, [flushCurrentStorageWrites, resetNotebookSessionInWorker]);
 
   const executeNotebookCell = useCallback(async ({ filename, document, cellId }) => {
     const cellIndex = document.cells.findIndex((cell) => cell.id === cellId);
@@ -2016,7 +2229,7 @@ export default function App({ onNavigateHome }) {
       return { error: "Notebook cell could not be found." };
     }
 
-    await flushAllWrites();
+    await flushCurrentStorageWrites();
     setBottomPanelMode("terminal");
     setMobilePane("editor");
     setOfflineProofVisible(false);
@@ -2076,7 +2289,7 @@ export default function App({ onNavigateHome }) {
     }
 
     return normalizedResult;
-  }, [flushAllWrites, runNotebookCellInWorker]);
+  }, [flushCurrentStorageWrites, runNotebookCellInWorker]);
 
   const handleRunNotebookAll = useCallback(async (filename, fileContent) => {
     const parsed = parsePythonNotebookDocument(fileContent);
@@ -2163,7 +2376,7 @@ export default function App({ onNavigateHome }) {
           terminalRef.current?.writeln("\x1b[33m[WasmForge] Python environment is still loading.\x1b[0m");
           return;
         }
-        await flushAllWrites();
+        await flushCurrentStorageWrites(syncedSnapshot);
         setPythonExecution({
           ...createEmptyPythonExecution(),
           filename: activeFile,
@@ -2178,7 +2391,7 @@ export default function App({ onNavigateHome }) {
           terminalRef.current?.writeln("\x1b[33m[WasmForge] JavaScript environment is still loading.\x1b[0m");
           return;
         }
-        await flushAllWrites().catch(() => {});
+        await flushCurrentStorageWrites(syncedSnapshot).catch(() => {});
         runJsCode({ filename: activeFile, code: codeToRun });
         return;
 
@@ -2248,7 +2461,7 @@ export default function App({ onNavigateHome }) {
     executePgliteFile,
     executeSqliteFile,
     files,
-    flushAllWrites,
+    flushCurrentStorageWrites,
     handleRunNotebookAll,
     isActiveFileLoading,
     isJsReady,
@@ -2294,6 +2507,125 @@ export default function App({ onNavigateHome }) {
       publishShareStatus("Share failed", "error");
     }
   }, [activeFile, files, getActiveEditorSnapshot, publishShareStatus]);
+
+  const handleConnectLocalFolder = useCallback(async () => {
+    if (isRunning || isJsRunning || isSqlRunning) {
+      terminalRef.current?.writeln(
+        "\x1b[33m[Local folder] Finish or stop the active session before changing folder access.\x1b[0m",
+      );
+      return;
+    }
+
+    if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
+      terminalRef.current?.writeln(
+        "\x1b[31m[Local folder] This browser does not support the File System Access API. Use Chromium/Edge on localhost or HTTPS.\x1b[0m",
+      );
+      return;
+    }
+
+    try {
+      await prepareWorkspaceMutation("connecting a local folder");
+      const handle = await window.showDirectoryPicker({
+        id: "wasmforge-local-folder",
+        mode: "readwrite",
+      });
+      const permissionOptions = { mode: "readwrite" };
+      const currentPermission =
+        typeof handle.queryPermission === "function"
+          ? await handle.queryPermission(permissionOptions)
+          : "granted";
+      const nextPermission =
+        currentPermission === "granted" || typeof handle.requestPermission !== "function"
+          ? currentPermission
+          : await handle.requestPermission(permissionOptions);
+
+      if (nextPermission !== "granted") {
+        throw new Error("Folder permission was not granted.");
+      }
+
+      const folderName = handle.name || "selected folder";
+      localFolderBridgeRef.current = { handle, name: folderName };
+      setLocalFolderBridge({ handle, name: folderName });
+      setIsActiveFileLoading(true);
+      setSqlExecution(createEmptySqlExecution());
+      setPythonExecution(createEmptyPythonExecution());
+      setOfflineProofVisible(false);
+      setOpenFiles([]);
+      setFiles([]);
+      setActiveFile("");
+      setSidebarMode("explorer");
+      setFileSearchQuery("");
+      setBottomPanelMode("terminal");
+      setMobilePane("files");
+      await refreshLocalFolderFiles(handle, activeFileRef.current);
+      terminalRef.current?.writeln(
+        `\x1b[36m[Local folder] Connected "${folderName}". Code can read/write only inside that selected folder.\x1b[0m`,
+      );
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        terminalRef.current?.writeln("\x1b[90m[Local folder] Folder selection cancelled.\x1b[0m");
+        return;
+      }
+
+      terminalRef.current?.writeln(`\x1b[31m[Local folder] ${error?.message || error}\x1b[0m`);
+    }
+  }, [isJsRunning, isRunning, isSqlRunning, prepareWorkspaceMutation, refreshLocalFolderFiles]);
+
+  const handleDisconnectLocalFolder = useCallback(async () => {
+    if (isRunning || isJsRunning || isSqlRunning) {
+      terminalRef.current?.writeln(
+        "\x1b[33m[Local folder] Finish or stop the active session before disconnecting the folder.\x1b[0m",
+      );
+      return;
+    }
+
+    const folderName = localFolderBridge.name || "selected folder";
+    try {
+      const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false });
+      await flushLocalFolderEditorSnapshot(snapshot);
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Local folder] Could not save before disconnecting: ${error?.message || error}\x1b[0m`);
+      return;
+    }
+
+    localFolderBridgeRef.current = { handle: null, name: "" };
+    setLocalFolderBridge({ handle: null, name: "" });
+    setIsActiveFileLoading(true);
+    setSqlExecution(createEmptySqlExecution());
+    setPythonExecution(createEmptyPythonExecution());
+    setOfflineProofVisible(false);
+    setOpenFiles([]);
+    setFiles([]);
+    setActiveFile("");
+    setSidebarMode("explorer");
+    setFileSearchQuery("");
+    setBottomPanelMode("terminal");
+    setMobilePane("files");
+    terminalRef.current?.writeln(
+      `\x1b[90m[Local folder] Disconnected "${folderName}". WasmForge is back to the browser sandbox.\x1b[0m`,
+    );
+    await refreshBrowserWorkspaceFiles(DEFAULT_FILENAME, {
+      createDefaultIfEmpty: true,
+      workspaceName: activeWorkspaceRef.current,
+    });
+  }, [
+    flushLocalFolderEditorSnapshot,
+    isJsRunning,
+    isRunning,
+    isSqlRunning,
+    localFolderBridge.name,
+    refreshBrowserWorkspaceFiles,
+    syncActiveEditorDraft,
+  ]);
+
+  const handleToggleLocalFolder = useCallback(() => {
+    if (localFolderBridge.handle) {
+      void handleDisconnectLocalFolder();
+      return;
+    }
+
+    void handleConnectLocalFolder();
+  }, [handleConnectLocalFolder, handleDisconnectLocalFolder, localFolderBridge.handle]);
 
   useEffect(() => {
     const sharedPayload =
@@ -2387,6 +2719,11 @@ export default function App({ onNavigateHome }) {
   ]);
 
   const handleWorkspaceSelect = useCallback(async (workspaceName) => {
+    if (localFolderBridgeRef.current.handle) {
+      terminalRef.current?.writeln("\x1b[33m[Local folder] Disconnect the selected folder before switching browser workspaces.\x1b[0m");
+      return;
+    }
+
     if (workspaceName === activeWorkspaceRef.current) {
       return;
     }
@@ -2406,6 +2743,10 @@ export default function App({ onNavigateHome }) {
   }, [prepareWorkspaceMutation]);
 
   const handleCreateWorkspace = useCallback(async (name) => {
+    if (localFolderBridgeRef.current.handle) {
+      throw new Error("Disconnect the selected local folder before creating browser workspaces.");
+    }
+
     const normalizedName = normalizeWorkspaceName(name);
     if (workspaces.some((workspaceName) => workspaceName.toLowerCase() === normalizedName.toLowerCase())) {
       throw new Error("A workspace with that name already exists.");
@@ -2436,19 +2777,27 @@ export default function App({ onNavigateHome }) {
     }
 
     const workspaceName = activeWorkspaceRef.current;
-    syncActiveEditorDraft();
-    await flushAllWrites();
+    const snapshot = syncActiveEditorDraft();
+    await flushCurrentStorageWrites(snapshot);
     setIsActiveFileLoading(true);
     let content = "";
 
     try {
-      try {
-        content = await readFile(name, "workspace", workspaceName);
-      } catch (error) {
-        if (workspaceName !== activeWorkspaceRef.current || isMissingWorkspaceFileError(error)) {
+      const localFolderHandle = localFolderBridgeRef.current.handle;
+      if (localFolderHandle) {
+        content = await readLocalFolderTextFile(localFolderHandle, name);
+        if (localFolderHandle !== localFolderBridgeRef.current.handle) {
           return;
         }
-        throw error;
+      } else {
+        try {
+          content = await readFile(name, "workspace", workspaceName);
+        } catch (error) {
+          if (workspaceName !== activeWorkspaceRef.current || isMissingWorkspaceFileError(error)) {
+            return;
+          }
+          throw error;
+        }
       }
 
       if (workspaceName === activeWorkspaceRef.current) {
@@ -2461,7 +2810,7 @@ export default function App({ onNavigateHome }) {
         setIsActiveFileLoading(false);
       }
     }
-  }, [flushAllWrites, isJsRunning, isRunning, isSqlRunning, readFile, syncActiveEditorDraft, upsertFileContent]);
+  }, [flushCurrentStorageWrites, isJsRunning, isRunning, isSqlRunning, readFile, syncActiveEditorDraft, upsertFileContent]);
 
   const persistNotebookDocument = useCallback((filename, document, options = {}) => {
     const {
@@ -2471,8 +2820,13 @@ export default function App({ onNavigateHome }) {
     const serialized = serializePythonNotebookDocument(document);
 
     upsertFileContent(filename, serialized);
-    stageRecoveryWrite(filename, serialized);
-    scheduleWrite(filename, serialized);
+
+    if (localFolderBridgeRef.current.handle) {
+      void enqueueLocalFolderWrite(filename, serialized).catch(reportLocalFolderWriteError);
+    } else {
+      stageRecoveryWrite(filename, serialized);
+      scheduleWrite(filename, serialized);
+    }
 
     if (selectedCellId) {
       setNotebookSelectionByFile((prev) => ({
@@ -2489,16 +2843,22 @@ export default function App({ onNavigateHome }) {
     }
 
     return serialized;
-  }, [scheduleWrite, stageRecoveryWrite, upsertFileContent]);
+  }, [enqueueLocalFolderWrite, reportLocalFolderWriteError, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
 
   const handleCodeChange = useCallback((newContent) => {
     if (!activeFile) {
       return;
     }
     upsertFileContent(activeFile, newContent);
+
+    if (localFolderBridgeRef.current.handle) {
+      void enqueueLocalFolderWrite(activeFile, newContent).catch(reportLocalFolderWriteError);
+      return;
+    }
+
     stageRecoveryWrite(activeFile, newContent);
     scheduleWrite(activeFile, newContent);
-  }, [activeFile, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
+  }, [activeFile, enqueueLocalFolderWrite, reportLocalFolderWriteError, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
 
   const handleNotebookSelectCell = useCallback((filename, cellId) => {
     setNotebookSelectionByFile((prev) => ({
@@ -2590,9 +2950,19 @@ export default function App({ onNavigateHome }) {
     if (files.some((file) => file.name === trimmed)) {
       throw new Error("File already exists.");
     }
+    if (localFolderBridgeRef.current.handle && !isLocalFolderTextFileName(trimmed)) {
+      throw new Error("Local folder Explorer supports text and code files only.");
+    }
     const initialContent = isPythonNotebookFile(trimmed) ? createNotebookFileContent() : "";
     await prepareWorkspaceMutation("creating files");
-    await writeFile(trimmed, initialContent, "workspace", activeWorkspaceRef.current);
+
+    const localFolderHandle = localFolderBridgeRef.current.handle;
+    if (localFolderHandle) {
+      await writeLocalFolderTextFile(localFolderHandle, trimmed, initialContent);
+    } else {
+      await writeFile(trimmed, initialContent, "workspace", activeWorkspaceRef.current);
+    }
+
     await refreshWorkspaceFiles(trimmed, { workspaceName: activeWorkspaceRef.current });
     setMobilePane("editor");
   }, [files, prepareWorkspaceMutation, refreshWorkspaceFiles, writeFile]);
@@ -2610,8 +2980,18 @@ export default function App({ onNavigateHome }) {
     if (files.some((file) => file.name === trimmed && file.name !== currentName)) {
       throw new Error("File already exists.");
     }
+    if (localFolderBridgeRef.current.handle && !isLocalFolderTextFileName(trimmed)) {
+      throw new Error("Local folder Explorer supports text and code files only.");
+    }
     await prepareWorkspaceMutation("renaming files");
-    await renameWorkspaceFile(currentName, trimmed, activeWorkspaceRef.current);
+
+    const localFolderHandle = localFolderBridgeRef.current.handle;
+    if (localFolderHandle) {
+      await renameLocalFolderTextFile(localFolderHandle, currentName, trimmed);
+    } else {
+      await renameWorkspaceFile(currentName, trimmed, activeWorkspaceRef.current);
+    }
+
     clearRecoveryWrite(currentName);
     setNotebookSelectionByFile((prev) => {
       if (!Object.prototype.hasOwnProperty.call(prev, currentName)) {
@@ -2641,7 +3021,14 @@ export default function App({ onNavigateHome }) {
 
   const handleDeleteFile = useCallback(async (filename) => {
     await prepareWorkspaceMutation("deleting files");
-    await deleteWorkspaceFile(filename, "workspace", activeWorkspaceRef.current);
+
+    const localFolderHandle = localFolderBridgeRef.current.handle;
+    if (localFolderHandle) {
+      await deleteLocalFolderTextFile(localFolderHandle, filename);
+    } else {
+      await deleteWorkspaceFile(filename, "workspace", activeWorkspaceRef.current);
+    }
+
     clearRecoveryWrite(filename);
     setNotebookSelectionByFile((prev) => {
       if (!Object.prototype.hasOwnProperty.call(prev, filename)) {
@@ -2793,6 +3180,16 @@ export default function App({ onNavigateHome }) {
     ? `${activeStatusMessage} • ${activePythonLocalProofLabel}`
     : activeStatusMessage;
   const shareButtonDisabled = !activeFile;
+  const localFolderConnected = Boolean(localFolderBridge.handle);
+  const localFolderName = localFolderBridge.name || "selected folder";
+  const workspaceDisplayName = localFolderConnected ? localFolderName : activeWorkspace;
+  const localFolderStatusLabel = localFolderConnected
+    ? `Local folder: ${localFolderName}`
+    : "Sandboxed browser workspace";
+  const localFolderButtonLabel = localFolderConnected ? "Disconnect" : "Connect Folder";
+  const localFolderButtonTitle = localFolderConnected
+    ? `Disconnect local folder "${localFolderName}"`
+    : "Connect a local folder with browser permission";
   const offlineProofChecks = useMemo(() => ([
     {
       id: "service-worker",
@@ -2996,7 +3393,7 @@ export default function App({ onNavigateHome }) {
       theme={theme}
       files={files}
       activeFile={activeFile}
-      activeWorkspace={activeWorkspace}
+      activeWorkspace={workspaceDisplayName}
       mode={sidebarMode}
       searchQuery={fileSearchQuery}
       onSearchQueryChange={setFileSearchQuery}
@@ -3010,6 +3407,9 @@ export default function App({ onNavigateHome }) {
       onCreateNotebook={handleCreateNotebook}
       onRenameFile={handleRenameFile}
       onDeleteFile={handleDeleteFile}
+      workspaceLocked={localFolderConnected}
+      storageLabel={localFolderConnected ? "Selected local folder" : "Stored locally"}
+      footerLabel={localFolderConnected ? "Saving to selected folder" : "Saved locally"}
       disabled={isAnyRuntimeBusy || !workspaceBootstrapped}
     />
   );
@@ -3025,9 +3425,9 @@ export default function App({ onNavigateHome }) {
       }}
     >
       {files.length === 0 ? (
-        <EmptyEditorState workspaceName={activeWorkspace} isMobile={isMobileLayout} />
+        <EmptyEditorState workspaceName={workspaceDisplayName} isMobile={isMobileLayout} />
       ) : !activeFile ? (
-        <EmptyEditorState workspaceName={activeWorkspace} hasFiles isMobile={isMobileLayout} />
+        <EmptyEditorState workspaceName={workspaceDisplayName} hasFiles isMobile={isMobileLayout} />
       ) : isActiveNotebook ? (
         <PythonNotebook
           filename={activeFile}
@@ -3387,7 +3787,7 @@ export default function App({ onNavigateHome }) {
 
             <div style={{ display: "flex", alignItems: "center", gap: "12px", flexShrink: 0, color: "var(--ide-shell-muted)", fontSize: "11px" }}>
               <span style={{ color: "var(--ide-shell-text)", maxWidth: "180px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {activeWorkspace}
+                {workspaceDisplayName}
               </span>
               <span style={{ width: "1px", height: "12px", background: "var(--ide-shell-border-strong)", flexShrink: 0 }} />
               <span>{currentLanguageLabel}</span>
@@ -3475,6 +3875,20 @@ export default function App({ onNavigateHome }) {
                 className="wf-terminal-action"
               >
                 <TerminalIcon />
+              </button>
+              <button
+                type="button"
+                aria-label={localFolderConnected ? `Disconnect local folder ${localFolderName}` : "Connect local folder"}
+                title={localFolderButtonTitle}
+                onClick={handleToggleLocalFolder}
+                disabled={isAnyRuntimeBusy}
+                style={localFolderButtonStyle({
+                  active: localFolderConnected,
+                  disabled: isAnyRuntimeBusy,
+                })}
+              >
+                <FolderBridgeIcon />
+                <span>{localFolderButtonLabel}</span>
               </button>
               <button
                 type="button"
@@ -3567,7 +3981,7 @@ export default function App({ onNavigateHome }) {
                 }}
               >
                 {mobileHeaderTitle}
-                <span style={{ color: "var(--ide-shell-muted)" }}> — {activeWorkspace}</span>
+                <span style={{ color: "var(--ide-shell-muted)" }}> — {workspaceDisplayName}</span>
               </div>
             </button>
 
@@ -3580,6 +3994,21 @@ export default function App({ onNavigateHome }) {
               style={mobileTopButtonStyle(shareStatus.tone === "success")}
             >
               <ShareIcon />
+            </button>
+
+            <button
+              type="button"
+              aria-label={localFolderConnected ? `Disconnect local folder ${localFolderName}` : "Connect local folder"}
+              title={localFolderButtonTitle}
+              onClick={handleToggleLocalFolder}
+              disabled={isAnyRuntimeBusy}
+              style={{
+                ...mobileTopButtonStyle(localFolderConnected),
+                opacity: isAnyRuntimeBusy ? 0.56 : 1,
+                cursor: isAnyRuntimeBusy ? "not-allowed" : "pointer",
+              }}
+            >
+              <FolderBridgeIcon />
             </button>
 
             <button
@@ -3870,7 +4299,7 @@ export default function App({ onNavigateHome }) {
         >
           <div style={{ display: "flex", alignItems: "center", gap: "10px", minWidth: 0 }}>
             <span style={{ ...statusBarTokenStyle(), maxWidth: "220px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {activeWorkspace}
+              {workspaceDisplayName}
             </span>
             <span style={statusBarDividerStyle()} />
             <span style={{ ...statusBarTokenStyle(), display: "inline-flex", alignItems: "center", gap: "6px", minWidth: 0 }}>
@@ -3907,6 +4336,32 @@ export default function App({ onNavigateHome }) {
                 </span>
               </>
             ) : null}
+            <span style={statusBarDividerStyle()} />
+            <span
+              style={{
+                ...statusBarTokenStyle(),
+                color: localFolderConnected ? "var(--ide-shell-success)" : "var(--ide-shell-muted)",
+                maxWidth: "260px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={localFolderStatusLabel}
+            >
+              <span
+                style={{
+                  width: "6px",
+                  height: "6px",
+                  borderRadius: "999px",
+                  background: localFolderConnected
+                    ? "var(--ide-shell-success)"
+                    : "var(--ide-shell-muted)",
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+                {localFolderStatusLabel}
+              </span>
+            </span>
             <span style={statusBarTokenStyle()}>{currentLanguageLabel}</span>
             <span style={statusBarDividerStyle()} />
             <button
@@ -4427,6 +4882,16 @@ function ShareIcon() {
   );
 }
 
+function FolderBridgeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2.25 5h3.55l1 1.15h6.95v5.6a1 1 0 0 1-1 1h-9.5a1 1 0 0 1-1-1V5Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+      <path d="M5.15 9.1h5.7" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+      <path d="m8.65 7.45 1.9 1.65-1.9 1.65" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function CloseIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -4663,6 +5128,30 @@ function shareButtonStyle({ disabled = false, tone = "idle" } = {}) {
     letterSpacing: "0.04em",
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.82 : 1,
+  };
+}
+
+function localFolderButtonStyle({ active = false, disabled = false } = {}) {
+  return {
+    height: "28px",
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "7px",
+    padding: "0 11px",
+    borderRadius: "3px",
+    border: active
+      ? "1px solid color-mix(in srgb, var(--ide-shell-success) 38%, transparent)"
+      : "1px solid color-mix(in srgb, var(--ide-shell-border-strong) 46%, transparent)",
+    background: active
+      ? "color-mix(in srgb, var(--ide-shell-success) 13%, var(--ide-shell-panel))"
+      : "var(--ide-shell-panel)",
+    color: active ? "var(--ide-shell-success)" : "var(--ide-shell-text)",
+    fontSize: "12px",
+    fontWeight: 700,
+    letterSpacing: "0.04em",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.56 : 1,
+    flexShrink: 0,
   };
 }
 

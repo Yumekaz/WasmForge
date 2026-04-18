@@ -12,6 +12,8 @@ let runnerSettled = false
 let pendingMicrotasks = 0
 let pendingAsyncCallbacks = 0
 let completionResolver = null
+let localFolderHandle = null
+let localFolderName = ''
 const timerHandles = new Map()
 
 function postStatus(status) {
@@ -29,6 +31,119 @@ function appendOutput(kind, text) {
   }
 
   stdoutBuffer += text
+}
+
+function setLocalFolderHandle(handle) {
+  localFolderHandle = handle || null
+  localFolderName = localFolderHandle?.name || ''
+}
+
+function normalizeLocalFolderPath(path, { allowRoot = false } = {}) {
+  const raw = String(path ?? '')
+  if (raw.includes('\\')) {
+    throw new Error("Local folder paths must use '/' separators")
+  }
+
+  const stripped = raw.trim()
+  if (!stripped) {
+    if (allowRoot) {
+      return []
+    }
+    throw new Error('Local folder path cannot be empty')
+  }
+
+  if (stripped.startsWith('/') || stripped.startsWith('~')) {
+    throw new Error('Local folder paths must be relative')
+  }
+
+  const parts = stripped.split('/').filter((part) => part.length > 0 && part !== '.')
+  if (parts.some((part) => part === '..')) {
+    throw new Error('Local folder path cannot escape the selected folder')
+  }
+
+  if (parts.length === 0 && !allowRoot) {
+    throw new Error('Local folder path must name a file')
+  }
+
+  return parts
+}
+
+function assertLocalFolderConnected() {
+  if (!localFolderHandle) {
+    throw new Error('No local folder connected. Click Connect Folder first.')
+  }
+}
+
+async function resolveLocalFolderFile(path, { create = false } = {}) {
+  assertLocalFolderConnected()
+  const parts = normalizeLocalFolderPath(path)
+  const filename = parts.at(-1)
+  let directory = localFolderHandle
+
+  for (const segment of parts.slice(0, -1)) {
+    directory = await directory.getDirectoryHandle(segment, { create })
+  }
+
+  return {
+    safePath: parts.join('/'),
+    handle: await directory.getFileHandle(filename, { create }),
+  }
+}
+
+async function resolveLocalFolderDirectory(path = '.') {
+  assertLocalFolderConnected()
+  const parts = normalizeLocalFolderPath(path, { allowRoot: true })
+  let directory = localFolderHandle
+
+  for (const segment of parts) {
+    directory = await directory.getDirectoryHandle(segment)
+  }
+
+  return directory
+}
+
+async function readLocalFolderText(path) {
+  const { handle } = await resolveLocalFolderFile(path)
+  const file = await handle.getFile()
+  return file.text()
+}
+
+async function writeLocalFolderText(path, content) {
+  const { safePath, handle } = await resolveLocalFolderFile(path, { create: true })
+  const writable = await handle.createWritable()
+  try {
+    await writable.write(String(content ?? ''))
+  } finally {
+    await writable.close()
+  }
+
+  appendOutput('stdout', `[Local folder] Wrote ${safePath}\n`)
+  return safePath
+}
+
+async function listLocalFolderFiles(path = '.') {
+  const directory = await resolveLocalFolderDirectory(path)
+  const names = []
+
+  for await (const [name, handle] of directory.entries()) {
+    names.push(handle.kind === 'directory' ? `${name}/` : name)
+  }
+
+  return names.sort((left, right) => left.localeCompare(right))
+}
+
+function createLocalFolderBridge() {
+  return Object.freeze({
+    isConnected: () => Boolean(localFolderHandle),
+    localRoot: () => localFolderName,
+    readText: readLocalFolderText,
+    writeText: writeLocalFolderText,
+    listFiles: listLocalFolderFiles,
+    help: () => (
+      "Use await wasmforgeFS.readText(path), await wasmforgeFS.writeText(path, text), " +
+      "and await wasmforgeFS.listFiles(path). Paths are relative to the folder you granted."
+    ),
+  })
 }
 
 function flushOutput() {
@@ -351,6 +466,7 @@ function createSandboxScope() {
 
   Object.assign(sandboxGlobal, {
     console: consoleProxy,
+    wasmforgeFS: createLocalFolderBridge(),
     globalThis: sandboxGlobal,
     self: sandboxGlobal,
     setTimeout: setTimeoutProxy,
@@ -507,15 +623,21 @@ ${executableSource}
 }
 
 self.onmessage = async (event) => {
-  const { type, code, filename } = event.data || {}
+  const { type, code, filename, localFolderHandle: incomingLocalFolderHandle } = event.data || {}
 
   switch (type) {
     case 'init':
+      setLocalFolderHandle(incomingLocalFolderHandle)
       postStatus('JavaScript ready')
       self.postMessage({ type: 'ready' })
       break
 
+    case 'set_local_folder':
+      setLocalFolderHandle(incomingLocalFolderHandle)
+      break
+
     case 'run':
+      setLocalFolderHandle(incomingLocalFolderHandle)
       await runUserCode(code, filename || DEFAULT_FILENAME)
       break
 
