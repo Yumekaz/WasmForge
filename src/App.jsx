@@ -4520,11 +4520,16 @@ export default function App({ onNavigateHome }) {
   }, [isActiveNotebook]);
 
   useEffect(() => {
-    if (offlineProofVisible || bottomPanelMode === "airlock") {
+    if (offlineProofVisible) {
       return;
     }
-    setBottomPanelMode(showSqlResultsPanel ? "output" : "terminal");
-  }, [activeFile, bottomPanelMode, offlineProofVisible, showSqlResultsPanel]);
+    setBottomPanelMode((currentMode) => {
+      if (currentMode === "airlock") {
+        return currentMode;
+      }
+      return showSqlResultsPanel ? "output" : "terminal";
+    });
+  }, [activeFile, offlineProofVisible, showSqlResultsPanel]);
 
   useEffect(() => {
     if (!isMobileLayout) {
