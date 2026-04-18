@@ -112,6 +112,13 @@ const LOCAL_FOLDER_TEXT_EXTENSIONS = new Set([
 ]);
 const LOCAL_FOLDER_ENTRY_KIND_DIRECTORY = "directory";
 const LOCAL_FOLDER_ENTRY_KIND_FILE = "file";
+const AIRLOCK_SNAPSHOT_STORAGE_KEY_PREFIX = "wasmforge:airlock-snapshots";
+const MAX_AIRLOCK_SNAPSHOTS = 8;
+const AIRLOCK_STATUS_UNCHANGED = "unchanged";
+const AIRLOCK_STATUS_LOCAL = "local";
+const AIRLOCK_STATUS_DISK = "disk";
+const AIRLOCK_STATUS_CONFLICT = "conflict";
+const AIRLOCK_STATUS_RESOLVED = "resolved";
 const Editor = lazy(() => import("./components/Editor.jsx"));
 
 const IDE_THEME_PALETTES = {
@@ -429,6 +436,230 @@ async function renameLocalFolderTextFile(directoryHandle, currentName, nextName)
   await writeLocalFolderTextFile(directoryHandle, normalizedNextName, content);
   await deleteLocalFolderTextFile(directoryHandle, normalizedCurrentName);
   return normalizedNextName;
+}
+
+async function readLocalFolderTextFileMap(directoryHandle) {
+  const entries = await listLocalFolderEntries(directoryHandle);
+  const files = new Map();
+
+  for (const entry of entries) {
+    if (entry.kind !== LOCAL_FOLDER_ENTRY_KIND_FILE || entry.supported === false) {
+      continue;
+    }
+
+    files.set(entry.name, {
+      name: entry.name,
+      content: await readLocalFolderTextFile(directoryHandle, entry.name),
+    });
+  }
+
+  return files;
+}
+
+async function hashText(content) {
+  const text = String(content ?? "");
+  const bytes = new TextEncoder().encode(text);
+
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv-${(hash >>> 0).toString(16)}-${text.length}`;
+}
+
+async function createManifestFromFileMap(fileMap) {
+  const manifest = {};
+
+  for (const [name, file] of fileMap) {
+    manifest[name] = {
+      hash: await hashText(file?.content ?? ""),
+      content: file?.content ?? "",
+    };
+  }
+
+  return manifest;
+}
+
+function createFileMapFromRecords(records = []) {
+  const fileMap = new Map();
+
+  for (const file of records) {
+    if (!isSelectableFileRecord(file)) {
+      continue;
+    }
+
+    fileMap.set(file.name, {
+      name: file.name,
+      content: file.content ?? "",
+    });
+  }
+
+  return fileMap;
+}
+
+function createEntriesFromTextFileMap(fileMap) {
+  return Array.from(fileMap.keys()).map((name) => ({
+    name,
+    kind: LOCAL_FOLDER_ENTRY_KIND_FILE,
+    supported: true,
+  }));
+}
+
+function createEmptyLocalFolderBridge() {
+  return {
+    handle: null,
+    name: "",
+    syncEnabled: false,
+    baseManifest: {},
+  };
+}
+
+function isLocalFolderSyncActive(bridge) {
+  return Boolean(bridge?.handle && bridge?.syncEnabled);
+}
+
+function getAirlockSnapshotStorageKey(workspaceName) {
+  return `${AIRLOCK_SNAPSHOT_STORAGE_KEY_PREFIX}:${workspaceName || DEFAULT_WORKSPACE_NAME}`;
+}
+
+function normalizeAirlockSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+
+  const files = Array.isArray(snapshot.files)
+    ? snapshot.files
+      .filter((file) => typeof file?.name === "string" && typeof file?.content === "string")
+      .map((file) => ({ name: file.name, content: file.content }))
+    : [];
+
+  if (!snapshot.id || files.length === 0) {
+    return null;
+  }
+
+  return {
+    id: String(snapshot.id),
+    label: String(snapshot.label || "Snapshot"),
+    folderName: String(snapshot.folderName || ""),
+    createdAt: Number(snapshot.createdAt) || Date.now(),
+    files,
+  };
+}
+
+function readStoredAirlockSnapshots(workspaceName) {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(getAirlockSnapshotStorageKey(workspaceName));
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .map(normalizeAirlockSnapshot)
+      .filter(Boolean)
+      .slice(0, MAX_AIRLOCK_SNAPSHOTS);
+  } catch {
+    return [];
+  }
+}
+
+function persistAirlockSnapshots(workspaceName, snapshots) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      getAirlockSnapshotStorageKey(workspaceName),
+      JSON.stringify(snapshots.slice(0, MAX_AIRLOCK_SNAPSHOTS)),
+    );
+  } catch {
+    // Snapshot storage is best-effort; the live workspace remains the source of truth.
+  }
+}
+
+function createAirlockSnapshotRecord(fileMap, label, folderName = "") {
+  return {
+    id: `snap-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    label,
+    folderName,
+    createdAt: Date.now(),
+    files: Array.from(fileMap.values()).map((file) => ({
+      name: file.name,
+      content: file.content ?? "",
+    })),
+  };
+}
+
+function formatAirlockSnapshotTime(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(timestamp);
+  } catch {
+    return new Date(timestamp).toLocaleString();
+  }
+}
+
+function classifyAirlockChanges(baseManifest = {}, localManifest = {}, diskManifest = {}, localFileMap = new Map(), diskFileMap = new Map()) {
+  const filenames = Array.from(new Set([
+    ...Object.keys(baseManifest),
+    ...Object.keys(localManifest),
+    ...Object.keys(diskManifest),
+  ])).sort((left, right) => left.localeCompare(right));
+
+  return filenames.map((name) => {
+    const baseHash = baseManifest[name]?.hash ?? null;
+    const localHash = localManifest[name]?.hash ?? null;
+    const diskHash = diskManifest[name]?.hash ?? null;
+    const localContent = localFileMap.has(name) ? localFileMap.get(name)?.content ?? "" : null;
+    const diskContent = diskFileMap.has(name) ? diskFileMap.get(name)?.content ?? "" : null;
+    const localChanged = localHash !== baseHash;
+    const diskChanged = diskHash !== baseHash;
+    let status = AIRLOCK_STATUS_UNCHANGED;
+
+    if (localHash === diskHash) {
+      status = AIRLOCK_STATUS_UNCHANGED;
+    } else if (localChanged && !diskChanged) {
+      status = AIRLOCK_STATUS_LOCAL;
+    } else if (!localChanged && diskChanged) {
+      status = AIRLOCK_STATUS_DISK;
+    } else if (localChanged && diskChanged) {
+      status = AIRLOCK_STATUS_CONFLICT;
+    }
+
+    return {
+      id: name,
+      name,
+      status,
+      baseHash,
+      localHash,
+      diskHash,
+      localContent,
+      diskContent,
+      resolved: status === AIRLOCK_STATUS_UNCHANGED,
+      resolution: status === AIRLOCK_STATUS_UNCHANGED ? "unchanged" : "",
+    };
+  });
 }
 
 function normalizeWorkspaceName(name) {
@@ -958,10 +1189,17 @@ export default function App({ onNavigateHome }) {
   const [offlineProofVisible, setOfflineProofVisible] = useState(false);
   const [offlineProofState, setOfflineProofState] = useState(createInitialOfflineProofState);
   const [isPreparingOfflineProof, setIsPreparingOfflineProof] = useState(false);
-  const [localFolderBridge, setLocalFolderBridge] = useState({
-    handle: null,
-    name: "",
+  const [localFolderBridge, setLocalFolderBridge] = useState(createEmptyLocalFolderBridge);
+  const [airlockSnapshots, setAirlockSnapshots] = useState(() =>
+    readStoredAirlockSnapshots(readPersistedActiveWorkspace()),
+  );
+  const [airlockCenter, setAirlockCenter] = useState({
+    open: false,
+    items: [],
+    compareFile: "",
+    message: "",
   });
+  const [airlockBusy, setAirlockBusy] = useState(false);
   const [shareHashSignal, setShareHashSignal] = useState(0);
   const [viewportWidth, setViewportWidth] = useState(
     typeof window === "undefined" ? 1280 : window.innerWidth,
@@ -987,6 +1225,9 @@ export default function App({ onNavigateHome }) {
   const ideTheme = theme;
   const idePalette = useMemo(() => getIdePalette(ideTheme), [ideTheme]);
   const ideCssVars = useMemo(() => getIdeCssVars(idePalette), [idePalette]);
+  const runtimeLocalFolderHandle = isLocalFolderSyncActive(localFolderBridge)
+    ? localFolderBridge.handle
+    : null;
 
   useEffect(() => {
     persistAppTheme(theme);
@@ -1084,6 +1325,7 @@ export default function App({ onNavigateHome }) {
   useEffect(() => {
     activeWorkspaceRef.current = activeWorkspace;
     recoveryWritesRef.current = readRecoveryEntries(activeWorkspace);
+    setAirlockSnapshots(readStoredAirlockSnapshots(activeWorkspace));
 
     if (typeof window !== "undefined") {
       window.localStorage.setItem(ACTIVE_WORKSPACE_STORAGE_KEY, activeWorkspace);
@@ -1400,8 +1642,61 @@ export default function App({ onNavigateHome }) {
     });
   }, []);
 
+  const getSyncedLocalFolderHandle = useCallback(() => {
+    const bridge = localFolderBridgeRef.current;
+    return isLocalFolderSyncActive(bridge) ? bridge.handle : null;
+  }, []);
+
+  const readBrowserWorkspaceFileMap = useCallback(async (workspaceName = activeWorkspaceRef.current) => {
+    await flushAllWrites();
+    const filenames = await listFiles(workspaceName);
+    const fileMap = new Map();
+
+    for (const filename of filenames) {
+      fileMap.set(filename, {
+        name: filename,
+        content: await readFile(filename, "workspace", workspaceName),
+      });
+    }
+
+    return fileMap;
+  }, [flushAllWrites, listFiles, readFile]);
+
+  const replaceBrowserWorkspaceWithFileMap = useCallback(async (fileMap, workspaceName = activeWorkspaceRef.current) => {
+    await flushAllWrites();
+    const existingFilenames = await listFiles(workspaceName);
+
+    for (const filename of existingFilenames) {
+      if (!fileMap.has(filename)) {
+        await deleteWorkspaceFile(filename, "workspace", workspaceName);
+        clearRecoveryWrite(filename, workspaceName);
+      }
+    }
+
+    for (const [filename, file] of fileMap) {
+      await writeFile(filename, file.content ?? "", "workspace", workspaceName);
+      clearRecoveryWrite(filename, workspaceName);
+    }
+  }, [clearRecoveryWrite, deleteWorkspaceFile, flushAllWrites, listFiles, writeFile]);
+
+  const pushAirlockSnapshot = useCallback((snapshot) => {
+    setAirlockSnapshots((previous) => {
+      const next = [snapshot, ...previous]
+        .filter(Boolean)
+        .slice(0, MAX_AIRLOCK_SNAPSHOTS);
+      persistAirlockSnapshots(activeWorkspaceRef.current, next);
+      return next;
+    });
+  }, []);
+
+  const createSnapshotFromFileMap = useCallback((fileMap, label, folderName = localFolderBridgeRef.current.name) => {
+    const snapshot = createAirlockSnapshotRecord(fileMap, label, folderName);
+    pushAirlockSnapshot(snapshot);
+    return snapshot;
+  }, [pushAirlockSnapshot]);
+
   const enqueueLocalFolderWrite = useCallback(
-    (filename, content, folderHandle = localFolderBridgeRef.current.handle) => {
+    (filename, content, folderHandle = getSyncedLocalFolderHandle()) => {
       if (!folderHandle) {
         return Promise.resolve();
       }
@@ -1416,12 +1711,12 @@ export default function App({ onNavigateHome }) {
       localFolderWriteQueueRef.current = writeTask;
       return writeTask;
     },
-    [clearRecoveryWrite],
+    [clearRecoveryWrite, getSyncedLocalFolderHandle],
   );
 
   const flushLocalFolderEditorSnapshot = useCallback(
     async (snapshot = getActiveEditorSnapshot()) => {
-      const folderHandle = localFolderBridgeRef.current.handle;
+      const folderHandle = getSyncedLocalFolderHandle();
       if (!folderHandle) {
         return;
       }
@@ -1432,7 +1727,7 @@ export default function App({ onNavigateHome }) {
 
       await localFolderWriteQueueRef.current;
     },
-    [enqueueLocalFolderWrite, getActiveEditorSnapshot],
+    [enqueueLocalFolderWrite, getActiveEditorSnapshot, getSyncedLocalFolderHandle],
   );
 
   const reportLocalFolderWriteError = useCallback(
@@ -1444,14 +1739,14 @@ export default function App({ onNavigateHome }) {
 
   const flushCurrentStorageWrites = useCallback(
     async (snapshot = getActiveEditorSnapshot()) => {
-      if (localFolderBridgeRef.current.handle) {
+      if (getSyncedLocalFolderHandle()) {
         await flushLocalFolderEditorSnapshot(snapshot);
         return;
       }
 
       await flushAllWrites();
     },
-    [flushAllWrites, flushLocalFolderEditorSnapshot, getActiveEditorSnapshot],
+    [flushAllWrites, flushLocalFolderEditorSnapshot, getActiveEditorSnapshot, getSyncedLocalFolderHandle],
   );
 
   const recoverPendingWrites = useCallback(async (workspaceName = activeWorkspaceRef.current) => {
@@ -1579,7 +1874,7 @@ export default function App({ onNavigateHome }) {
   const refreshWorkspaceFiles = useCallback(
     async (preferredFile = activeFileRef.current, options = {}) => {
       const workspaceName = options.workspaceName ?? activeWorkspaceRef.current;
-      const localFolderHandle = localFolderBridgeRef.current.handle;
+      const localFolderHandle = getSyncedLocalFolderHandle();
 
       if (localFolderHandle && workspaceName === activeWorkspaceRef.current) {
         await refreshLocalFolderFiles(localFolderHandle, preferredFile);
@@ -1588,7 +1883,7 @@ export default function App({ onNavigateHome }) {
 
       await refreshBrowserWorkspaceFiles(preferredFile, options);
     },
-    [refreshBrowserWorkspaceFiles, refreshLocalFolderFiles],
+    [getSyncedLocalFolderHandle, refreshBrowserWorkspaceFiles, refreshLocalFolderFiles],
   );
   const handlePythonDone = useCallback(
     (doneResult = {}) => {
@@ -1657,17 +1952,17 @@ export default function App({ onNavigateHome }) {
         upsertFileContent(filename, content);
       }
 
-      if (!localFolderBridgeRef.current.handle) {
+      if (!getSyncedLocalFolderHandle()) {
         stageRecoveryWrite(filename, content);
       }
 
-      if (scheduleWorkerWrite && !localFolderBridgeRef.current.handle) {
+      if (scheduleWorkerWrite && !getSyncedLocalFolderHandle()) {
         scheduleWrite(filename, content);
       }
 
       return snapshot;
     },
-    [getActiveEditorSnapshot, scheduleWrite, stageRecoveryWrite, upsertFileContent],
+    [getActiveEditorSnapshot, getSyncedLocalFolderHandle, scheduleWrite, stageRecoveryWrite, upsertFileContent],
   );
 
   const handleEditorMount = useCallback(
@@ -1680,12 +1975,12 @@ export default function App({ onNavigateHome }) {
 
       editorSubscriptionRef.current = editor.onDidChangeModelContent(() => {
         const filename = getEditorFilename(editor);
-        if (filename && !localFolderBridgeRef.current.handle) {
+        if (filename && !getSyncedLocalFolderHandle()) {
           stageRecoveryWrite(filename, editor.getValue());
         }
       });
     },
-    [getEditorFilename, stageRecoveryWrite],
+    [getEditorFilename, getSyncedLocalFolderHandle, stageRecoveryWrite],
   );
 
   const {
@@ -1699,7 +1994,7 @@ export default function App({ onNavigateHome }) {
     isAwaitingInput,
   } = usePyodideWorker({
     workspaceName: activeWorkspace,
-    localFolderHandle: localFolderBridge.handle,
+    localFolderHandle: runtimeLocalFolderHandle,
     onStdout: writeStdout,
     onStderr: writeStderr,
     onFigures: (figures) => {
@@ -1793,7 +2088,7 @@ export default function App({ onNavigateHome }) {
     isRunning: isJsRunning,
     status: jsStatus,
   } = useJsWorker({
-    localFolderHandle: localFolderBridge.handle,
+    localFolderHandle: runtimeLocalFolderHandle,
     onStdout: writeStdout,
     onStderr: writeStderr,
     onReady: () => {
@@ -2148,7 +2443,7 @@ export default function App({ onNavigateHome }) {
     const flushPendingWorkspaceWrites = () => {
       const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false, updateState: false });
 
-      if (localFolderBridgeRef.current.handle) {
+      if (getSyncedLocalFolderHandle()) {
         void flushLocalFolderEditorSnapshot(snapshot).catch(() => {});
         return;
       }
@@ -2171,7 +2466,7 @@ export default function App({ onNavigateHome }) {
       window.removeEventListener("beforeunload", flushPendingWorkspaceWrites);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [flushAllWrites, flushLocalFolderEditorSnapshot, syncActiveEditorDraft]);
+  }, [flushAllWrites, flushLocalFolderEditorSnapshot, getSyncedLocalFolderHandle, syncActiveEditorDraft]);
 
   useEffect(() => {
     return () => {
@@ -2617,20 +2912,21 @@ export default function App({ onNavigateHome }) {
   const handleConnectLocalFolder = useCallback(async () => {
     if (isRunning || isJsRunning || isSqlRunning) {
       terminalRef.current?.writeln(
-        "\x1b[33m[Local folder] Finish or stop the active session before changing folder access.\x1b[0m",
+        "\x1b[33m[Airlock] Finish or stop the active session before linking folder access.\x1b[0m",
       );
       return;
     }
 
     if (typeof window === "undefined" || typeof window.showDirectoryPicker !== "function") {
       terminalRef.current?.writeln(
-        "\x1b[31m[Local folder] This browser does not support the File System Access API. Use Chromium/Edge on localhost or HTTPS.\x1b[0m",
+        "\x1b[31m[Airlock] This browser does not support the File System Access API. Use Chromium/Edge on localhost or HTTPS.\x1b[0m",
       );
       return;
     }
 
     try {
-      await prepareWorkspaceMutation("connecting a local folder");
+      setAirlockBusy(true);
+      await prepareWorkspaceMutation("linking a local folder");
       const handle = await window.showDirectoryPicker({
         id: "wasmforge-local-folder",
         mode: "readwrite",
@@ -2650,8 +2946,23 @@ export default function App({ onNavigateHome }) {
       }
 
       const folderName = handle.name || "selected folder";
-      localFolderBridgeRef.current = { handle, name: folderName };
-      setLocalFolderBridge({ handle, name: folderName });
+      const diskFileMap = await readLocalFolderTextFileMap(handle);
+      const baseManifest = await createManifestFromFileMap(diskFileMap);
+      const nextBridge = {
+        handle,
+        name: folderName,
+        syncEnabled: true,
+        baseManifest,
+      };
+
+      localFolderBridgeRef.current = nextBridge;
+      setLocalFolderBridge(nextBridge);
+      setAirlockCenter({
+        open: false,
+        items: [],
+        compareFile: "",
+        message: "",
+      });
       setIsActiveFileLoading(true);
       setSqlExecution(createEmptySqlExecution());
       setPythonExecution(createEmptyPythonExecution());
@@ -2665,73 +2976,494 @@ export default function App({ onNavigateHome }) {
       setMobilePane("files");
       await refreshLocalFolderFiles(handle, activeFileRef.current);
       terminalRef.current?.writeln(
-        `\x1b[36m[Local folder] Connected "${folderName}". Code can read/write only inside that selected folder.\x1b[0m`,
+        `\x1b[36m[Airlock] Sync ON for "${folderName}". WebIDE reads/writes the selected folder.\x1b[0m`,
       );
     } catch (error) {
       if (error?.name === "AbortError") {
-        terminalRef.current?.writeln("\x1b[90m[Local folder] Folder selection cancelled.\x1b[0m");
+        terminalRef.current?.writeln("\x1b[90m[Airlock] Folder selection cancelled.\x1b[0m");
         return;
       }
 
-      terminalRef.current?.writeln(`\x1b[31m[Local folder] ${error?.message || error}\x1b[0m`);
+      terminalRef.current?.writeln(`\x1b[31m[Airlock] ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
     }
   }, [isJsRunning, isRunning, isSqlRunning, prepareWorkspaceMutation, refreshLocalFolderFiles]);
 
-  const handleDisconnectLocalFolder = useCallback(async () => {
+  const handleTurnSyncOff = useCallback(async () => {
     if (isRunning || isJsRunning || isSqlRunning) {
       terminalRef.current?.writeln(
-        "\x1b[33m[Local folder] Finish or stop the active session before disconnecting the folder.\x1b[0m",
+        "\x1b[33m[Airlock] Finish or stop the active session before detaching from disk.\x1b[0m",
       );
       return;
     }
 
-    const folderName = localFolderBridge.name || "selected folder";
-    try {
-      const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false });
-      await flushLocalFolderEditorSnapshot(snapshot);
-    } catch (error) {
-      terminalRef.current?.writeln(`\x1b[31m[Local folder] Could not save before disconnecting: ${error?.message || error}\x1b[0m`);
+    const bridge = localFolderBridgeRef.current;
+    if (!bridge.handle || !bridge.syncEnabled) {
       return;
     }
 
-    localFolderBridgeRef.current = { handle: null, name: "" };
-    setLocalFolderBridge({ handle: null, name: "" });
-    setIsActiveFileLoading(true);
-    setSqlExecution(createEmptySqlExecution());
-    setPythonExecution(createEmptyPythonExecution());
-    setOfflineProofVisible(false);
-    setOpenFiles([]);
-    setFiles([]);
-    setActiveFile("");
-    setSidebarMode("explorer");
-    setFileSearchQuery("");
-    setBottomPanelMode("terminal");
-    setMobilePane("files");
-    terminalRef.current?.writeln(
-      `\x1b[90m[Local folder] Disconnected "${folderName}". WasmForge is back to the browser sandbox.\x1b[0m`,
-    );
-    await refreshBrowserWorkspaceFiles(DEFAULT_FILENAME, {
-      createDefaultIfEmpty: true,
-      workspaceName: activeWorkspaceRef.current,
-    });
+    const folderName = bridge.name || "selected folder";
+    try {
+      setAirlockBusy(true);
+      const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false });
+      await flushLocalFolderEditorSnapshot(snapshot);
+      const diskFileMap = await readLocalFolderTextFileMap(bridge.handle);
+      const baseManifest = await createManifestFromFileMap(diskFileMap);
+      await replaceBrowserWorkspaceWithFileMap(diskFileMap, activeWorkspaceRef.current);
+      const airlockSnapshot = createSnapshotFromFileMap(
+        diskFileMap,
+        `Auto: Sync OFF from ${folderName}`,
+        folderName,
+      );
+      const entries = createEntriesFromTextFileMap(diskFileMap);
+      const filenames = Array.from(diskFileMap.keys());
+      const nextActiveFile = chooseActiveFile(filenames, activeFileRef.current);
+      const nextBridge = {
+        ...bridge,
+        syncEnabled: false,
+        baseManifest,
+      };
+
+      localFolderBridgeRef.current = nextBridge;
+      setLocalFolderBridge(nextBridge);
+      replaceFileList(entries);
+      if (nextActiveFile) {
+        setActiveFile(nextActiveFile);
+        upsertFileContent(nextActiveFile, diskFileMap.get(nextActiveFile)?.content ?? "");
+      } else {
+        setOpenFiles([]);
+        setActiveFile("");
+      }
+      setSqlExecution(createEmptySqlExecution());
+      setPythonExecution(createEmptyPythonExecution());
+      setOfflineProofVisible(false);
+      setSidebarMode("explorer");
+      setFileSearchQuery("");
+      setBottomPanelMode("terminal");
+      setMobilePane("files");
+      setAirlockCenter({
+        open: false,
+        items: [],
+        compareFile: "",
+        message: `Detached from ${folderName}. Snapshot saved: ${airlockSnapshot.label}.`,
+      });
+      terminalRef.current?.writeln(
+        `\x1b[90m[Airlock] Sync OFF for "${folderName}". Disk writes stopped; editing continues in the local shadow workspace.\x1b[0m`,
+      );
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Airlock] Could not detach safely: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+        setIsActiveFileLoading(false);
+      }
+    }
   }, [
+    createSnapshotFromFileMap,
     flushLocalFolderEditorSnapshot,
     isJsRunning,
     isRunning,
     isSqlRunning,
-    localFolderBridge.name,
-    refreshBrowserWorkspaceFiles,
+    replaceBrowserWorkspaceWithFileMap,
+    replaceFileList,
     syncActiveEditorDraft,
+    upsertFileContent,
   ]);
 
-  const handleToggleLocalFolder = useCallback(() => {
-    if (localFolderBridge.handle) {
-      void handleDisconnectLocalFolder();
+  const handleReattachLocalFolder = useCallback(async () => {
+    if (isRunning || isJsRunning || isSqlRunning) {
+      terminalRef.current?.writeln(
+        "\x1b[33m[Airlock] Finish or stop the active session before reattaching to disk.\x1b[0m",
+      );
       return;
     }
 
-    void handleConnectLocalFolder();
-  }, [handleConnectLocalFolder, handleDisconnectLocalFolder, localFolderBridge.handle]);
+    const bridge = localFolderBridgeRef.current;
+    if (!bridge.handle || bridge.syncEnabled) {
+      return;
+    }
+
+    const folderName = bridge.name || "selected folder";
+    try {
+      setAirlockBusy(true);
+      const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false });
+      await flushAllWrites();
+      if (snapshot) {
+        await writeFile(snapshot.filename, snapshot.content, "workspace", activeWorkspaceRef.current);
+        clearRecoveryWrite(snapshot.filename, activeWorkspaceRef.current);
+      }
+
+      const localFileMap = await readBrowserWorkspaceFileMap(activeWorkspaceRef.current);
+      createSnapshotFromFileMap(
+        localFileMap,
+        `Auto: before reattach to ${folderName}`,
+        folderName,
+      );
+      const diskFileMap = await readLocalFolderTextFileMap(bridge.handle);
+      const localManifest = await createManifestFromFileMap(localFileMap);
+      const diskManifest = await createManifestFromFileMap(diskFileMap);
+      const items = classifyAirlockChanges(
+        bridge.baseManifest,
+        localManifest,
+        diskManifest,
+        localFileMap,
+        diskFileMap,
+      );
+      const actionableCount = items.filter((item) => item.status !== AIRLOCK_STATUS_UNCHANGED).length;
+
+      setAirlockCenter({
+        open: true,
+        items,
+        compareFile: items.find((item) => item.status === AIRLOCK_STATUS_CONFLICT)?.name || "",
+        message: actionableCount
+          ? `${actionableCount} file${actionableCount === 1 ? "" : "s"} need Airlock reconciliation before Sync ON.`
+          : "No changes found. You can resume Sync ON safely.",
+      });
+      setBottomPanelMode("terminal");
+      setMobilePane("editor");
+      terminalRef.current?.writeln(
+        actionableCount
+          ? `\x1b[33m[Airlock] Reattach scan found ${actionableCount} change${actionableCount === 1 ? "" : "s"}. Resolve them in Conflict Center.\x1b[0m`
+          : `\x1b[32m[Airlock] Reattach scan clean for "${folderName}".\x1b[0m`,
+      );
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Airlock] Reattach failed: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
+    }
+  }, [
+    clearRecoveryWrite,
+    createSnapshotFromFileMap,
+    flushAllWrites,
+    isJsRunning,
+    isRunning,
+    isSqlRunning,
+    readBrowserWorkspaceFileMap,
+    syncActiveEditorDraft,
+    writeFile,
+  ]);
+
+  const handleToggleLocalFolder = useCallback(() => {
+    if (!localFolderBridge.handle) {
+      void handleConnectLocalFolder();
+      return;
+    }
+
+    if (localFolderBridge.syncEnabled) {
+      void handleTurnSyncOff();
+      return;
+    }
+
+    void handleReattachLocalFolder();
+  }, [
+    handleConnectLocalFolder,
+    handleReattachLocalFolder,
+    handleTurnSyncOff,
+    localFolderBridge.handle,
+    localFolderBridge.syncEnabled,
+  ]);
+
+  const applyAirlockResolution = useCallback(async (item, resolution) => {
+    const bridge = localFolderBridgeRef.current;
+    if (!bridge.handle) {
+      throw new Error("No linked folder is available for Airlock reconciliation.");
+    }
+
+    const keepLocal = resolution === "local";
+    const keepDisk = resolution === "disk";
+
+    if (keepLocal) {
+      if (item.localContent === null) {
+        try {
+          await deleteLocalFolderTextFile(bridge.handle, item.name);
+        } catch (error) {
+          if (!isMissingWorkspaceFileError(error)) {
+            throw error;
+          }
+        }
+      } else {
+        await writeLocalFolderTextFile(bridge.handle, item.name, item.localContent);
+      }
+      return;
+    }
+
+    if (keepDisk) {
+      if (item.diskContent === null) {
+        await deleteWorkspaceFile(item.name, "workspace", activeWorkspaceRef.current);
+        clearRecoveryWrite(item.name, activeWorkspaceRef.current);
+      } else {
+        await writeFile(item.name, item.diskContent, "workspace", activeWorkspaceRef.current);
+        clearRecoveryWrite(item.name, activeWorkspaceRef.current);
+        upsertFileContent(item.name, item.diskContent);
+      }
+      return;
+    }
+
+    throw new Error("Unknown Airlock resolution.");
+  }, [clearRecoveryWrite, deleteWorkspaceFile, upsertFileContent, writeFile]);
+
+  const markAirlockResolved = useCallback((filename, resolution) => {
+    setAirlockCenter((previous) => ({
+      ...previous,
+      items: previous.items.map((item) => (
+        item.name === filename
+          ? {
+            ...item,
+            status: AIRLOCK_STATUS_RESOLVED,
+            resolved: true,
+            resolution,
+          }
+          : item
+      )),
+      message: `Resolved ${filename} using ${resolution === "local" ? "local shadow" : "disk"} version.`,
+    }));
+  }, []);
+
+  const handleResolveAirlockItem = useCallback(async (item, resolution) => {
+    if (!item || item.resolved) {
+      return;
+    }
+
+    try {
+      setAirlockBusy(true);
+      await applyAirlockResolution(item, resolution);
+      markAirlockResolved(item.name, resolution);
+      terminalRef.current?.writeln(
+        `\x1b[36m[Airlock] ${item.name}: kept ${resolution === "local" ? "local shadow" : "disk"} version.\x1b[0m`,
+      );
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Airlock] ${item.name}: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
+    }
+  }, [applyAirlockResolution, markAirlockResolved]);
+
+  const handleApplySafeAirlockChanges = useCallback(async () => {
+    const safeItems = airlockCenter.items.filter((item) =>
+      !item.resolved && (item.status === AIRLOCK_STATUS_LOCAL || item.status === AIRLOCK_STATUS_DISK),
+    );
+
+    if (safeItems.length === 0) {
+      return;
+    }
+
+    try {
+      setAirlockBusy(true);
+      for (const item of safeItems) {
+        const resolution = item.status === AIRLOCK_STATUS_LOCAL ? "local" : "disk";
+        await applyAirlockResolution(item, resolution);
+      }
+
+      setAirlockCenter((previous) => ({
+        ...previous,
+        items: previous.items.map((item) => {
+          if (item.resolved || (item.status !== AIRLOCK_STATUS_LOCAL && item.status !== AIRLOCK_STATUS_DISK)) {
+            return item;
+          }
+          const resolution = item.status === AIRLOCK_STATUS_LOCAL ? "local" : "disk";
+          return {
+            ...item,
+            status: AIRLOCK_STATUS_RESOLVED,
+            resolved: true,
+            resolution,
+          };
+        }),
+        message: `Applied ${safeItems.length} non-conflicting Airlock change${safeItems.length === 1 ? "" : "s"}.`,
+      }));
+      terminalRef.current?.writeln(
+        `\x1b[36m[Airlock] Applied ${safeItems.length} safe reconciliation action${safeItems.length === 1 ? "" : "s"}.\x1b[0m`,
+      );
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Airlock] Safe apply failed: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
+    }
+  }, [airlockCenter.items, applyAirlockResolution]);
+
+  const handleFinishAirlockReattach = useCallback(async () => {
+    const unresolved = airlockCenter.items.filter((item) =>
+      !item.resolved && item.status !== AIRLOCK_STATUS_UNCHANGED,
+    );
+    const bridge = localFolderBridgeRef.current;
+
+    if (!bridge.handle) {
+      return;
+    }
+
+    if (unresolved.length > 0) {
+      terminalRef.current?.writeln(
+        `\x1b[33m[Airlock] Resolve ${unresolved.length} file${unresolved.length === 1 ? "" : "s"} before Sync ON.\x1b[0m`,
+      );
+      return;
+    }
+
+    try {
+      setAirlockBusy(true);
+      const diskFileMap = await readLocalFolderTextFileMap(bridge.handle);
+      const baseManifest = await createManifestFromFileMap(diskFileMap);
+      const nextBridge = {
+        ...bridge,
+        syncEnabled: true,
+        baseManifest,
+      };
+
+      localFolderBridgeRef.current = nextBridge;
+      setLocalFolderBridge(nextBridge);
+      setAirlockCenter({
+        open: false,
+        items: [],
+        compareFile: "",
+        message: "",
+      });
+      setSqlExecution(createEmptySqlExecution());
+      setPythonExecution(createEmptyPythonExecution());
+      await refreshLocalFolderFiles(bridge.handle, activeFileRef.current);
+      terminalRef.current?.writeln(
+        `\x1b[32m[Airlock] Sync ON for "${bridge.name || "selected folder"}". Disk and WebIDE are reconciled.\x1b[0m`,
+      );
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Airlock] Could not finish reattach: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
+    }
+  }, [airlockCenter.items, refreshLocalFolderFiles]);
+
+  const handleSaveAirlockSnapshot = useCallback(async () => {
+    try {
+      setAirlockBusy(true);
+      const snapshot = syncActiveEditorDraft({ scheduleWorkerWrite: false });
+
+      if (getSyncedLocalFolderHandle()) {
+        await flushLocalFolderEditorSnapshot(snapshot);
+        const diskFileMap = await readLocalFolderTextFileMap(localFolderBridgeRef.current.handle);
+        const savedSnapshot = createSnapshotFromFileMap(
+          diskFileMap,
+          `Manual: ${localFolderBridgeRef.current.name || "linked folder"}`,
+          localFolderBridgeRef.current.name,
+        );
+        setAirlockCenter((previous) => ({
+          ...previous,
+          open: true,
+          message: `Snapshot saved: ${savedSnapshot.label}.`,
+        }));
+        terminalRef.current?.writeln(`\x1b[36m[Snapshot] Saved ${savedSnapshot.label}.\x1b[0m`);
+        return;
+      }
+
+      await flushAllWrites();
+      if (snapshot) {
+        await writeFile(snapshot.filename, snapshot.content, "workspace", activeWorkspaceRef.current);
+        clearRecoveryWrite(snapshot.filename, activeWorkspaceRef.current);
+      }
+      const localFileMap = await readBrowserWorkspaceFileMap(activeWorkspaceRef.current);
+      const savedSnapshot = createSnapshotFromFileMap(
+        localFileMap,
+        `Manual: ${localFolderBridgeRef.current.name || activeWorkspaceRef.current}`,
+        localFolderBridgeRef.current.name,
+      );
+      setAirlockCenter((previous) => ({
+        ...previous,
+        open: true,
+        message: `Snapshot saved: ${savedSnapshot.label}.`,
+      }));
+      terminalRef.current?.writeln(`\x1b[36m[Snapshot] Saved ${savedSnapshot.label}.\x1b[0m`);
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Snapshot] Save failed: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
+    }
+  }, [
+    clearRecoveryWrite,
+    createSnapshotFromFileMap,
+    flushAllWrites,
+    flushLocalFolderEditorSnapshot,
+    getSyncedLocalFolderHandle,
+    readBrowserWorkspaceFileMap,
+    syncActiveEditorDraft,
+    writeFile,
+  ]);
+
+  const handleRestoreAirlockSnapshot = useCallback(async (snapshot) => {
+    const runtimeBusy = isRunning || isJsRunning || isSqlRunning;
+    if (!snapshot || runtimeBusy) {
+      return;
+    }
+
+    try {
+      setAirlockBusy(true);
+      const fileMap = new Map(snapshot.files.map((file) => [
+        file.name,
+        { name: file.name, content: file.content },
+      ]));
+      await replaceBrowserWorkspaceWithFileMap(fileMap, activeWorkspaceRef.current);
+      const bridge = localFolderBridgeRef.current;
+      if (bridge.handle) {
+        const nextBridge = {
+          ...bridge,
+          syncEnabled: false,
+        };
+        localFolderBridgeRef.current = nextBridge;
+        setLocalFolderBridge(nextBridge);
+      }
+
+      const entries = createEntriesFromTextFileMap(fileMap);
+      const filenames = Array.from(fileMap.keys());
+      const nextActiveFile = chooseActiveFile(filenames, activeFileRef.current);
+      replaceFileList(entries);
+      if (nextActiveFile) {
+        setActiveFile(nextActiveFile);
+        upsertFileContent(nextActiveFile, fileMap.get(nextActiveFile)?.content ?? "");
+      } else {
+        setActiveFile("");
+        setOpenFiles([]);
+      }
+      setAirlockCenter({
+        open: false,
+        items: [],
+        compareFile: "",
+        message: `Restored snapshot "${snapshot.label}" into the detached shadow workspace.`,
+      });
+      setBottomPanelMode("terminal");
+      setMobilePane("editor");
+      terminalRef.current?.writeln(
+        `\x1b[36m[Snapshot] Restored "${snapshot.label}" into the detached shadow workspace. Disk was not changed.\x1b[0m`,
+      );
+    } catch (error) {
+      terminalRef.current?.writeln(`\x1b[31m[Snapshot] Restore failed: ${error?.message || error}\x1b[0m`);
+    } finally {
+      if (isMountedRef.current) {
+        setAirlockBusy(false);
+      }
+    }
+  }, [
+    isJsRunning,
+    isRunning,
+    isSqlRunning,
+    replaceBrowserWorkspaceWithFileMap,
+    replaceFileList,
+    upsertFileContent,
+  ]);
+
+  const closeAirlockCenter = useCallback(() => {
+    setAirlockCenter((previous) => ({
+      ...previous,
+      open: false,
+      compareFile: "",
+    }));
+  }, []);
 
   useEffect(() => {
     const sharedPayload =
@@ -2900,10 +3632,10 @@ export default function App({ onNavigateHome }) {
     let content = "";
 
     try {
-      const localFolderHandle = localFolderBridgeRef.current.handle;
+      const localFolderHandle = getSyncedLocalFolderHandle();
       if (localFolderHandle) {
         content = await readLocalFolderTextFile(localFolderHandle, name);
-        if (localFolderHandle !== localFolderBridgeRef.current.handle) {
+        if (localFolderHandle !== getSyncedLocalFolderHandle()) {
           return;
         }
       } else {
@@ -2927,7 +3659,7 @@ export default function App({ onNavigateHome }) {
         setIsActiveFileLoading(false);
       }
     }
-  }, [files, flushCurrentStorageWrites, isJsRunning, isRunning, isSqlRunning, readFile, syncActiveEditorDraft, upsertFileContent]);
+  }, [files, flushCurrentStorageWrites, getSyncedLocalFolderHandle, isJsRunning, isRunning, isSqlRunning, readFile, syncActiveEditorDraft, upsertFileContent]);
 
   const persistNotebookDocument = useCallback((filename, document, options = {}) => {
     const {
@@ -2938,7 +3670,7 @@ export default function App({ onNavigateHome }) {
 
     upsertFileContent(filename, serialized);
 
-    if (localFolderBridgeRef.current.handle) {
+    if (getSyncedLocalFolderHandle()) {
       void enqueueLocalFolderWrite(filename, serialized).catch(reportLocalFolderWriteError);
     } else {
       stageRecoveryWrite(filename, serialized);
@@ -2960,7 +3692,7 @@ export default function App({ onNavigateHome }) {
     }
 
     return serialized;
-  }, [enqueueLocalFolderWrite, reportLocalFolderWriteError, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
+  }, [enqueueLocalFolderWrite, getSyncedLocalFolderHandle, reportLocalFolderWriteError, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
 
   const handleCodeChange = useCallback((newContent) => {
     if (!activeFile) {
@@ -2968,14 +3700,14 @@ export default function App({ onNavigateHome }) {
     }
     upsertFileContent(activeFile, newContent);
 
-    if (localFolderBridgeRef.current.handle) {
+    if (getSyncedLocalFolderHandle()) {
       void enqueueLocalFolderWrite(activeFile, newContent).catch(reportLocalFolderWriteError);
       return;
     }
 
     stageRecoveryWrite(activeFile, newContent);
     scheduleWrite(activeFile, newContent);
-  }, [activeFile, enqueueLocalFolderWrite, reportLocalFolderWriteError, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
+  }, [activeFile, enqueueLocalFolderWrite, getSyncedLocalFolderHandle, reportLocalFolderWriteError, scheduleWrite, stageRecoveryWrite, upsertFileContent]);
 
   const handleNotebookSelectCell = useCallback((filename, cellId) => {
     setNotebookSelectionByFile((prev) => ({
@@ -3063,14 +3795,15 @@ export default function App({ onNavigateHome }) {
   }, [persistNotebookDocument]);
 
   const handleCreateFile = useCallback(async (name) => {
-    const localFolderHandle = localFolderBridgeRef.current.handle;
-    const trimmed = localFolderHandle
+    const localFolderLinked = Boolean(localFolderBridgeRef.current.handle);
+    const localFolderHandle = getSyncedLocalFolderHandle();
+    const trimmed = localFolderLinked
       ? normalizeLocalFolderPath(name)
       : normalizeWorkspaceFilename(name);
     if (files.some((file) => file.name === trimmed)) {
       throw new Error("File already exists.");
     }
-    if (localFolderHandle && !isLocalFolderTextFileName(trimmed)) {
+    if (localFolderLinked && !isLocalFolderTextFileName(trimmed)) {
       throw new Error("Local folder Explorer supports text and code files only.");
     }
     const initialContent = isPythonNotebookFile(trimmed) ? createNotebookFileContent() : "";
@@ -3084,7 +3817,7 @@ export default function App({ onNavigateHome }) {
 
     await refreshWorkspaceFiles(trimmed, { workspaceName: activeWorkspaceRef.current });
     setMobilePane("editor");
-  }, [files, prepareWorkspaceMutation, refreshWorkspaceFiles, writeFile]);
+  }, [files, getSyncedLocalFolderHandle, prepareWorkspaceMutation, refreshWorkspaceFiles, writeFile]);
 
   const handleCreateNotebook = useCallback(async () => {
     const nextFilename = createNotebookFilename(files);
@@ -3092,8 +3825,9 @@ export default function App({ onNavigateHome }) {
   }, [files, handleCreateFile]);
 
   const handleRenameFile = useCallback(async (currentName, nextName) => {
-    const localFolderHandle = localFolderBridgeRef.current.handle;
-    const trimmed = localFolderHandle
+    const localFolderLinked = Boolean(localFolderBridgeRef.current.handle);
+    const localFolderHandle = getSyncedLocalFolderHandle();
+    const trimmed = localFolderLinked
       ? normalizeLocalFolderPath(nextName)
       : normalizeWorkspaceFilename(nextName);
     if (currentName === trimmed) {
@@ -3102,7 +3836,7 @@ export default function App({ onNavigateHome }) {
     if (files.some((file) => file.name === trimmed && file.name !== currentName)) {
       throw new Error("File already exists.");
     }
-    if (localFolderHandle && !isLocalFolderTextFileName(trimmed)) {
+    if (localFolderLinked && !isLocalFolderTextFileName(trimmed)) {
       throw new Error("Local folder Explorer supports text and code files only.");
     }
     await prepareWorkspaceMutation("renaming files");
@@ -3138,12 +3872,12 @@ export default function App({ onNavigateHome }) {
       fileName === currentName ? trimmed : fileName
     )));
     await refreshWorkspaceFiles(trimmed, { workspaceName: activeWorkspaceRef.current });
-  }, [clearRecoveryWrite, files, prepareWorkspaceMutation, refreshWorkspaceFiles, renameWorkspaceFile]);
+  }, [clearRecoveryWrite, files, getSyncedLocalFolderHandle, prepareWorkspaceMutation, refreshWorkspaceFiles, renameWorkspaceFile]);
 
   const handleDeleteFile = useCallback(async (filename) => {
     await prepareWorkspaceMutation("deleting files");
 
-    const localFolderHandle = localFolderBridgeRef.current.handle;
+    const localFolderHandle = getSyncedLocalFolderHandle();
     if (localFolderHandle) {
       await deleteLocalFolderTextFile(localFolderHandle, filename);
     } else {
@@ -3182,7 +3916,7 @@ export default function App({ onNavigateHome }) {
       ),
       { workspaceName: activeWorkspaceRef.current },
     );
-  }, [clearRecoveryWrite, deleteWorkspaceFile, files, prepareWorkspaceMutation, refreshWorkspaceFiles]);
+  }, [clearRecoveryWrite, deleteWorkspaceFile, files, getSyncedLocalFolderHandle, prepareWorkspaceMutation, refreshWorkspaceFiles]);
 
   const handleCloseTab = useCallback((filename) => {
     const runtimeBusy = isRunning || isJsRunning || isSqlRunning;
@@ -3301,16 +4035,33 @@ export default function App({ onNavigateHome }) {
     ? `${activeStatusMessage} • ${activePythonLocalProofLabel}`
     : activeStatusMessage;
   const shareButtonDisabled = !activeFile;
-  const localFolderConnected = Boolean(localFolderBridge.handle);
+  const localFolderLinked = Boolean(localFolderBridge.handle);
+  const localFolderSyncActive = isLocalFolderSyncActive(localFolderBridge);
+  const localFolderConnected = localFolderLinked;
   const localFolderName = localFolderBridge.name || "selected folder";
-  const workspaceDisplayName = localFolderConnected ? localFolderName : activeWorkspace;
-  const localFolderStatusLabel = localFolderConnected
-    ? `Local folder: ${localFolderName}`
+  const workspaceDisplayName = localFolderLinked ? localFolderName : activeWorkspace;
+  const localFolderStatusLabel = localFolderLinked
+    ? (localFolderSyncActive
+      ? `Airlock Sync ON: ${localFolderName}`
+      : `Airlock Sync OFF: ${localFolderName} shadow`)
     : "Sandboxed browser workspace";
-  const localFolderButtonLabel = localFolderConnected ? "Disconnect" : "Connect Folder";
-  const localFolderButtonTitle = localFolderConnected
-    ? `Disconnect local folder "${localFolderName}"`
-    : "Connect a local folder with browser permission";
+  const localFolderButtonLabel = localFolderLinked
+    ? (localFolderSyncActive ? "Sync Off" : "Sync On")
+    : "Link Folder";
+  const localFolderButtonTitle = localFolderLinked
+    ? (localFolderSyncActive
+      ? `Stop disk writes and detach "${localFolderName}" into a shadow workspace`
+      : `Rescan "${localFolderName}" and reconcile before Sync ON`)
+    : "Link a real local folder with browser permission";
+  const localFolderStorageLabel = localFolderLinked
+    ? (localFolderSyncActive ? "Sync ON: selected folder" : "Sync OFF: shadow workspace")
+    : "Stored locally";
+  const localFolderFooterLabel = localFolderLinked
+    ? (localFolderSyncActive ? "Saving to selected folder" : "Detached shadow saves locally")
+    : "Saved locally";
+  const unresolvedAirlockItems = airlockCenter.items.filter((item) =>
+    !item.resolved && item.status !== AIRLOCK_STATUS_UNCHANGED,
+  );
   const offlineProofChecks = useMemo(() => ([
     {
       id: "service-worker",
@@ -3509,6 +4260,28 @@ export default function App({ onNavigateHome }) {
     setTheme((currentTheme) => (currentTheme === "default" ? "inverted" : "default"));
   }, []);
 
+  const airlockCenterPanel = airlockCenter.open ? (
+    <AirlockConflictCenter
+      items={airlockCenter.items}
+      message={airlockCenter.message}
+      compareFile={airlockCenter.compareFile}
+      snapshots={airlockSnapshots}
+      busy={airlockBusy}
+      unresolvedCount={unresolvedAirlockItems.length}
+      onApplySafe={handleApplySafeAirlockChanges}
+      onFinish={handleFinishAirlockReattach}
+      onResolve={handleResolveAirlockItem}
+      onCompare={(filename) => {
+        setAirlockCenter((previous) => ({
+          ...previous,
+          compareFile: previous.compareFile === filename ? "" : filename,
+        }));
+      }}
+      onRestoreSnapshot={handleRestoreAirlockSnapshot}
+      onClose={closeAirlockCenter}
+    />
+  ) : null;
+
   const filesPanel = (
     <FileTree
       theme={theme}
@@ -3528,11 +4301,11 @@ export default function App({ onNavigateHome }) {
       onCreateNotebook={handleCreateNotebook}
       onRenameFile={handleRenameFile}
       onDeleteFile={handleDeleteFile}
-      workspaceLocked={localFolderConnected}
-      storageLabel={localFolderConnected ? "Selected local folder" : "Stored locally"}
-      footerLabel={localFolderConnected ? "Saving to selected folder" : "Saved locally"}
-      allowNestedPaths={localFolderConnected}
-      disabled={isAnyRuntimeBusy || !workspaceBootstrapped}
+      workspaceLocked={localFolderLinked}
+      storageLabel={localFolderStorageLabel}
+      footerLabel={localFolderFooterLabel}
+      allowNestedPaths={localFolderLinked}
+      disabled={isAnyRuntimeBusy || airlockBusy || !workspaceBootstrapped}
     />
   );
 
@@ -4000,13 +4773,27 @@ export default function App({ onNavigateHome }) {
               </button>
               <button
                 type="button"
-                aria-label={localFolderConnected ? `Disconnect local folder ${localFolderName}` : "Connect local folder"}
+                aria-label="Save local snapshot"
+                title="Save Snapshot"
+                onClick={handleSaveAirlockSnapshot}
+                disabled={isAnyRuntimeBusy || airlockBusy || files.length === 0}
+                style={headerTextButtonStyle({
+                  active: airlockCenter.open,
+                  disabled: isAnyRuntimeBusy || airlockBusy || files.length === 0,
+                })}
+              >
+                Snapshot
+              </button>
+              <button
+                type="button"
+                aria-label={localFolderLinked ? localFolderButtonLabel : "Link local folder"}
                 title={localFolderButtonTitle}
                 onClick={handleToggleLocalFolder}
-                disabled={isAnyRuntimeBusy}
+                disabled={isAnyRuntimeBusy || airlockBusy}
                 style={localFolderButtonStyle({
-                  active: localFolderConnected,
-                  disabled: isAnyRuntimeBusy,
+                  active: localFolderSyncActive,
+                  linked: localFolderLinked,
+                  disabled: isAnyRuntimeBusy || airlockBusy,
                 })}
               >
                 <FolderBridgeIcon />
@@ -4120,14 +4907,14 @@ export default function App({ onNavigateHome }) {
 
             <button
               type="button"
-              aria-label={localFolderConnected ? `Disconnect local folder ${localFolderName}` : "Connect local folder"}
+              aria-label={localFolderLinked ? localFolderButtonLabel : "Link local folder"}
               title={localFolderButtonTitle}
               onClick={handleToggleLocalFolder}
-              disabled={isAnyRuntimeBusy}
+              disabled={isAnyRuntimeBusy || airlockBusy}
               style={{
-                ...mobileTopButtonStyle(localFolderConnected),
-                opacity: isAnyRuntimeBusy ? 0.56 : 1,
-                cursor: isAnyRuntimeBusy ? "not-allowed" : "pointer",
+                ...mobileTopButtonStyle(localFolderSyncActive),
+                opacity: isAnyRuntimeBusy || airlockBusy ? 0.56 : 1,
+                cursor: isAnyRuntimeBusy || airlockBusy ? "not-allowed" : "pointer",
               }}
             >
               <FolderBridgeIcon />
@@ -4186,6 +4973,7 @@ export default function App({ onNavigateHome }) {
               <div style={{ height: "100%" }}>{outputPanel}</div>
             ) : (
               <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "var(--ide-shell-bg)" }}>
+                {airlockCenterPanel}
                 <div style={{ flex: 1, minHeight: 0 }}>{editorPanel}</div>
                 <div
                   style={{
@@ -4368,6 +5156,7 @@ export default function App({ onNavigateHome }) {
                 background: "var(--ide-shell-bg)",
               }}
             >
+              {airlockCenterPanel}
               <div
                 style={{
                   ...editorPaneStyle,
@@ -5067,6 +5856,223 @@ function PlayIcon() {
   );
 }
 
+function AirlockConflictCenter({
+  items = [],
+  message = "",
+  compareFile = "",
+  snapshots = [],
+  busy = false,
+  unresolvedCount = 0,
+  onApplySafe,
+  onFinish,
+  onResolve,
+  onCompare,
+  onRestoreSnapshot,
+  onClose,
+}) {
+  const safeCount = items.filter((item) =>
+    !item.resolved && (item.status === AIRLOCK_STATUS_LOCAL || item.status === AIRLOCK_STATUS_DISK),
+  ).length;
+  const conflictCount = items.filter((item) => !item.resolved && item.status === AIRLOCK_STATUS_CONFLICT).length;
+  const visibleItems = items.filter((item) => item.status !== AIRLOCK_STATUS_UNCHANGED || item.resolved);
+  const compareItem = items.find((item) => item.name === compareFile);
+
+  return (
+    <section
+      style={{
+        flexShrink: 0,
+        border: "1px solid color-mix(in srgb, var(--ide-shell-accent) 24%, var(--ide-shell-border))",
+        borderRadius: "4px",
+        background: "linear-gradient(180deg, color-mix(in srgb, var(--ide-shell-panel) 96%, var(--ide-shell-accent) 4%), var(--ide-shell-panel-strong))",
+        marginBottom: "8px",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          minHeight: "40px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "12px",
+          padding: "8px 12px",
+          borderBottom: "1px solid var(--ide-shell-border)",
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: "var(--ide-shell-text)", fontSize: "12px", fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase" }}>
+            Airlock Conflict Center
+          </div>
+          <div style={{ marginTop: "4px", color: "var(--ide-shell-muted)", fontSize: "12px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {message || "Resolve detached workspace changes before writing to disk again."}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+          <span style={airlockMetricStyle(conflictCount > 0 ? "danger" : "idle")}>
+            {conflictCount} conflict{conflictCount === 1 ? "" : "s"}
+          </span>
+          <button
+            type="button"
+            onClick={onApplySafe}
+            disabled={busy || safeCount === 0}
+            style={airlockPanelButtonStyle({ disabled: busy || safeCount === 0 })}
+          >
+            Apply Safe
+          </button>
+          <button
+            type="button"
+            onClick={onFinish}
+            disabled={busy || unresolvedCount > 0}
+            style={airlockPanelButtonStyle({
+              tone: "success",
+              disabled: busy || unresolvedCount > 0,
+            })}
+          >
+            Resume Sync ON
+          </button>
+          <button
+            type="button"
+            aria-label="Close Airlock Center"
+            onClick={onClose}
+            style={terminalIconButtonStyle()}
+          >
+            <CloseIcon />
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: snapshots.length > 0 ? "minmax(0, 1fr) 240px" : "minmax(0, 1fr)", minHeight: "96px" }}>
+        <div style={{ padding: "10px 12px", minWidth: 0 }}>
+          {visibleItems.length === 0 ? (
+            <div style={{ color: "var(--ide-shell-muted)", fontSize: "12px", lineHeight: 1.7 }}>
+              No conflicts are pending. Snapshots still let you roll back the detached workspace for the demo.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: "6px" }}>
+              {visibleItems.map((item) => (
+                <div
+                  key={item.name}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0, 1fr) auto",
+                    alignItems: "center",
+                    gap: "10px",
+                    padding: "8px",
+                    border: "1px solid var(--ide-shell-border)",
+                    background: "color-mix(in srgb, var(--ide-shell-elevated) 78%, transparent)",
+                    borderRadius: "4px",
+                  }}
+                >
+                  <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span style={airlockStatusBadgeStyle(item.status)}>{getAirlockStatusLabel(item.status, item.resolution)}</span>
+                    <span style={{ color: "var(--ide-shell-text)", fontFamily: '"Cascadia Code", Consolas, monospace', fontSize: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {item.name}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    {item.status === AIRLOCK_STATUS_CONFLICT ? (
+                      <button type="button" onClick={() => onCompare?.(item.name)} style={airlockMiniButtonStyle()}>
+                        Compare
+                      </button>
+                    ) : null}
+                    {!item.resolved ? (
+                      <>
+                        <button type="button" onClick={() => onResolve?.(item, "local")} style={airlockMiniButtonStyle({ tone: "success" })}>
+                          Keep Local
+                        </button>
+                        <button type="button" onClick={() => onResolve?.(item, "disk")} style={airlockMiniButtonStyle()}>
+                          Keep Disk
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {compareItem ? (
+            <div style={{ marginTop: "10px", display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "8px" }}>
+              <AirlockComparePane label="Local Shadow" content={compareItem.localContent} />
+              <AirlockComparePane label="Disk Version" content={compareItem.diskContent} />
+            </div>
+          ) : null}
+        </div>
+
+        {snapshots.length > 0 ? (
+          <aside
+            style={{
+              borderLeft: "1px solid var(--ide-shell-border)",
+              padding: "10px",
+              minWidth: 0,
+              background: "color-mix(in srgb, var(--ide-shell-elevated) 82%, transparent)",
+            }}
+          >
+            <div style={{ color: "var(--ide-shell-muted)", fontSize: "10px", fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              Local Snapshots
+            </div>
+            <div style={{ display: "grid", gap: "6px", marginTop: "8px", maxHeight: "180px", overflow: "auto" }}>
+              {snapshots.map((snapshot) => (
+                <button
+                  key={snapshot.id}
+                  type="button"
+                  onClick={() => onRestoreSnapshot?.(snapshot)}
+                  disabled={busy}
+                  style={{
+                    border: "1px solid var(--ide-shell-border)",
+                    background: "var(--ide-shell-panel)",
+                    color: "var(--ide-shell-text)",
+                    borderRadius: "4px",
+                    padding: "7px",
+                    textAlign: "left",
+                    cursor: busy ? "not-allowed" : "pointer",
+                    opacity: busy ? 0.62 : 1,
+                  }}
+                >
+                  <span style={{ display: "block", fontSize: "11px", fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {snapshot.label}
+                  </span>
+                  <span style={{ display: "block", marginTop: "3px", color: "var(--ide-shell-muted)", fontSize: "10px" }}>
+                    {snapshot.files.length} files • {formatAirlockSnapshotTime(snapshot.createdAt)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </aside>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function AirlockComparePane({ label, content }) {
+  return (
+    <div style={{ minWidth: 0 }}>
+      <div style={{ color: "var(--ide-shell-muted)", fontSize: "10px", fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", marginBottom: "5px" }}>
+        {label}
+      </div>
+      <pre
+        style={{
+          margin: 0,
+          maxHeight: "180px",
+          overflow: "auto",
+          padding: "9px",
+          border: "1px solid var(--ide-shell-border)",
+          borderRadius: "4px",
+          background: "var(--ide-shell-editor-bg)",
+          color: content === null ? "var(--ide-shell-muted)" : "var(--ide-shell-text-soft)",
+          fontFamily: '"Cascadia Code", Consolas, monospace',
+          fontSize: "11px",
+          lineHeight: 1.55,
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {content === null ? "[file deleted]" : content}
+      </pre>
+    </div>
+  );
+}
+
 function OutputPlaceholder({ activeFile, isNotebook = false }) {
   return (
     <div
@@ -5143,6 +6149,99 @@ function EmptyEditorState({ workspaceName, hasFiles = false, isMobile = false })
   );
 }
 
+function getAirlockStatusLabel(status, resolution = "") {
+  switch (status) {
+    case AIRLOCK_STATUS_LOCAL:
+      return "Local changed";
+    case AIRLOCK_STATUS_DISK:
+      return "Disk changed";
+    case AIRLOCK_STATUS_CONFLICT:
+      return "Conflict";
+    case AIRLOCK_STATUS_RESOLVED:
+      return resolution === "disk" ? "Resolved: disk" : "Resolved: local";
+    default:
+      return "Unchanged";
+  }
+}
+
+function airlockStatusBadgeStyle(status) {
+  const color =
+    status === AIRLOCK_STATUS_CONFLICT
+      ? "var(--ide-shell-danger)"
+      : status === AIRLOCK_STATUS_LOCAL || status === AIRLOCK_STATUS_RESOLVED
+        ? "var(--ide-shell-success)"
+        : status === AIRLOCK_STATUS_DISK
+          ? "var(--ide-shell-warning)"
+          : "var(--ide-shell-muted)";
+
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "3px 6px",
+    borderRadius: "3px",
+    border: `1px solid color-mix(in srgb, ${color} 34%, transparent)`,
+    background: `color-mix(in srgb, ${color} 11%, transparent)`,
+    color,
+    fontSize: "10px",
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    whiteSpace: "nowrap",
+  };
+}
+
+function airlockPanelButtonStyle({ tone = "idle", disabled = false } = {}) {
+  const color = tone === "success" ? "var(--ide-shell-success)" : "var(--ide-shell-text)";
+
+  return {
+    border: `1px solid ${tone === "success" ? "color-mix(in srgb, var(--ide-shell-success) 32%, transparent)" : "var(--ide-shell-border)"}`,
+    background: tone === "success"
+      ? "color-mix(in srgb, var(--ide-shell-success) 12%, var(--ide-shell-panel))"
+      : "var(--ide-shell-panel)",
+    color: disabled ? "var(--ide-shell-muted-strong)" : color,
+    borderRadius: "3px",
+    height: "28px",
+    padding: "0 9px",
+    fontSize: "11px",
+    fontWeight: 700,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.58 : 1,
+  };
+}
+
+function airlockMiniButtonStyle({ tone = "idle" } = {}) {
+  const color = tone === "success" ? "var(--ide-shell-success)" : "var(--ide-shell-text-soft)";
+
+  return {
+    border: "1px solid var(--ide-shell-border)",
+    background: "var(--ide-shell-panel)",
+    color,
+    borderRadius: "3px",
+    padding: "4px 7px",
+    fontSize: "10px",
+    fontWeight: 700,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+  };
+}
+
+function airlockMetricStyle(tone = "idle") {
+  const color = tone === "danger" ? "var(--ide-shell-danger)" : "var(--ide-shell-muted)";
+
+  return {
+    color,
+    border: `1px solid color-mix(in srgb, ${color} 26%, transparent)`,
+    background: `color-mix(in srgb, ${color} 9%, transparent)`,
+    borderRadius: "999px",
+    padding: "5px 8px",
+    fontSize: "10px",
+    fontWeight: 800,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    whiteSpace: "nowrap",
+  };
+}
+
 function terminalActionButtonStyle({
   color = "var(--ide-shell-text)",
   border = "color-mix(in srgb, var(--ide-shell-border-strong) 30%, transparent)",
@@ -5213,6 +6312,27 @@ function headerIconButtonStyle(active = false) {
   };
 }
 
+function headerTextButtonStyle({ active = false, disabled = false } = {}) {
+  return {
+    height: "28px",
+    border: active
+      ? "1px solid color-mix(in srgb, var(--ide-shell-accent) 32%, transparent)"
+      : "1px solid color-mix(in srgb, var(--ide-shell-border-strong) 46%, transparent)",
+    borderRadius: "3px",
+    background: active
+      ? "color-mix(in srgb, var(--ide-shell-accent) 12%, var(--ide-shell-panel))"
+      : "var(--ide-shell-panel)",
+    color: active ? "var(--ide-shell-accent)" : "var(--ide-shell-text)",
+    padding: "0 10px",
+    fontSize: "11px",
+    fontWeight: 700,
+    letterSpacing: "0.05em",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.56 : 1,
+    flexShrink: 0,
+  };
+}
+
 function shareButtonStyle({ disabled = false, tone = "idle" } = {}) {
   const isSuccess = tone === "success";
   const isError = tone === "error";
@@ -5253,7 +6373,13 @@ function shareButtonStyle({ disabled = false, tone = "idle" } = {}) {
   };
 }
 
-function localFolderButtonStyle({ active = false, disabled = false } = {}) {
+function localFolderButtonStyle({ active = false, linked = false, disabled = false } = {}) {
+  const color = active
+    ? "var(--ide-shell-success)"
+    : linked
+      ? "var(--ide-shell-warning)"
+      : "var(--ide-shell-text)";
+
   return {
     height: "28px",
     display: "inline-flex",
@@ -5263,11 +6389,15 @@ function localFolderButtonStyle({ active = false, disabled = false } = {}) {
     borderRadius: "3px",
     border: active
       ? "1px solid color-mix(in srgb, var(--ide-shell-success) 38%, transparent)"
+      : linked
+        ? "1px solid color-mix(in srgb, var(--ide-shell-warning) 38%, transparent)"
       : "1px solid color-mix(in srgb, var(--ide-shell-border-strong) 46%, transparent)",
     background: active
       ? "color-mix(in srgb, var(--ide-shell-success) 13%, var(--ide-shell-panel))"
+      : linked
+        ? "color-mix(in srgb, var(--ide-shell-warning) 12%, var(--ide-shell-panel))"
       : "var(--ide-shell-panel)",
-    color: active ? "var(--ide-shell-success)" : "var(--ide-shell-text)",
+    color,
     fontSize: "12px",
     fontWeight: 700,
     letterSpacing: "0.04em",

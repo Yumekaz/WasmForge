@@ -22,14 +22,21 @@ function normalizeWorkspaceName(workspaceName) {
 }
 
 function normalizeFilename(filename) {
-  const normalized = String(filename || '').replace(/^\/?workspace\//u, '').trim()
+  const normalized = String(filename || '')
+    .replace(/^\/?workspace\//u, '')
+    .replace(/\\/g, '/')
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
   if (!normalized) {
     throw new Error('Filename is required')
   }
-  if (normalized.includes('/') || normalized.includes('\\')) {
-    throw new Error('Nested paths are not supported in the workspace explorer yet')
+
+  const parts = normalized.split('/').filter(Boolean)
+  if (parts.some((part) => part === '.' || part === '..')) {
+    throw new Error('Workspace file paths cannot escape the workspace')
   }
-  return normalized
+
+  return parts.join('/')
 }
 
 function getStagedWriteKey(workspaceName, filename) {
@@ -88,13 +95,31 @@ async function getScopedDirectory(scope = 'workspace', workspaceName) {
   }
 }
 
-async function getScopedFileHandle(filename, {
+async function getScopedParentDirectory(filename, {
   scope = 'workspace',
   workspaceName,
   create = false,
 } = {}) {
   const directory = await getScopedDirectory(scope, workspaceName)
-  return directory.getFileHandle(normalizeFilename(filename), { create })
+  const normalizedFilename = normalizeFilename(filename)
+  const parts = normalizedFilename.split('/')
+  const basename = parts.pop()
+  let currentDirectory = directory
+
+  for (const segment of parts) {
+    currentDirectory = await currentDirectory.getDirectoryHandle(segment, { create })
+  }
+
+  return {
+    directory: currentDirectory,
+    basename,
+    path: normalizedFilename,
+  }
+}
+
+async function getScopedFileHandle(filename, options = {}) {
+  const { directory, basename } = await getScopedParentDirectory(filename, options)
+  return directory.getFileHandle(basename, { create: Boolean(options.create) })
 }
 
 function getScheduledWrite(workspaceName, filename) {
@@ -226,13 +251,23 @@ async function listFiles(workspaceName) {
     }
   }
 
-  for await (const [name, handle] of workspace.entries()) {
-    if (handle.kind === 'file') {
-      filenames.add(name)
-    }
-  }
+  await collectScopedFiles(workspace, '', filenames)
 
   return Array.from(filenames).sort((left, right) => left.localeCompare(right))
+}
+
+async function collectScopedFiles(directory, basePath, filenames) {
+  for await (const [name, handle] of directory.entries()) {
+    const relativePath = basePath ? `${basePath}/${name}` : name
+    if (handle.kind === 'file') {
+      filenames.add(relativePath)
+      continue
+    }
+
+    if (handle.kind === 'directory') {
+      await collectScopedFiles(handle, relativePath, filenames)
+    }
+  }
 }
 
 async function listWorkspaces() {
@@ -263,13 +298,16 @@ async function fileExists(filename, scope = 'workspace', workspaceName) {
 
 async function deleteFile(filename, scope = 'workspace', workspaceName) {
   const normalizedFilename = normalizeFilename(filename)
-  const directory = await getScopedDirectory(scope, workspaceName)
+  const { directory, basename } = await getScopedParentDirectory(normalizedFilename, {
+    scope,
+    workspaceName,
+  })
   if (scope === 'workspace') {
     clearScheduledWrite(workspaceName, normalizedFilename)
   }
 
   try {
-    await directory.removeEntry(normalizedFilename)
+    await directory.removeEntry(basename)
     return { ok: true, deleted: true }
   } catch (error) {
     if (error?.name === 'NotFoundError') {
