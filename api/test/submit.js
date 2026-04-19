@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     return sendJson(res, 503, {
       ok: false,
       error: "backend_not_configured",
-      message: "Test submission sync is unavailable because backend environment variables are missing.",
+      message: "Cloud collection is not connected; the browser keeps this submission in the local queue.",
       config: getBackendConfigState(config),
     });
   }

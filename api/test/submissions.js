@@ -13,7 +13,7 @@ export default async function handler(req, res) {
     return sendJson(res, 503, {
       ok: false,
       error: "backend_not_configured",
-      message: "Teacher submissions are unavailable because backend environment variables are missing.",
+      message: "Cloud collection is not connected; use the local collection view for this demo.",
       config: getBackendConfigState(config),
     });
   }

@@ -5,9 +5,9 @@ import { readLocalTeacherSubmissions } from '../utils/testRoomStorage.js'
 const TEACHER_ROOM_STORAGE_KEY = 'wasmforge:teacher:last-room-code'
 const HEALTH_ENDPOINT = '/api/test/health'
 const SUBMISSIONS_ENDPOINT = '/api/test/submissions'
-const DEFAULT_HEALTH_MESSAGE = 'Backend ready.'
-const DEFAULT_NOT_CONFIGURED_MESSAGE =
-  'Backend not configured. Set DATABASE_URL and WASMFORGE_TEACHER_PIN before using the teacher dashboard.'
+const DEFAULT_HEALTH_MESSAGE = 'Cloud collection ready.'
+const DEFAULT_LOCAL_COLLECTION_MESSAGE =
+  'Local collection mode active. Submissions from this browser are available for the demo.'
 
 function readStoredTeacherRoom() {
   if (typeof window === 'undefined') {
@@ -209,7 +209,7 @@ function getHealthStatus(response, payload, text = '') {
   ) {
     return {
       status: 'not_configured',
-      message: message || DEFAULT_NOT_CONFIGURED_MESSAGE,
+      message: DEFAULT_LOCAL_COLLECTION_MESSAGE,
       payload: objectPayload,
     }
   }
@@ -749,7 +749,7 @@ export default function TeacherPage() {
   const [adminPin, setAdminPin] = useState('')
   const [healthState, setHealthState] = useState({
     status: 'idle',
-    message: 'Checking backend health...',
+    message: 'Checking collection mode...',
     payload: null,
   })
   const [fetchState, setFetchState] = useState({
@@ -837,7 +837,7 @@ export default function TeacherPage() {
 
     setHealthState({
       status: 'checking',
-      message: 'Checking backend health...',
+      message: 'Checking collection mode...',
       payload: null,
     })
 
@@ -852,7 +852,7 @@ export default function TeacherPage() {
 
         setHealthState({
           status: 'error',
-          message: error?.message || 'Could not reach /api/test/health.',
+          message: error?.message || 'Collection status check failed.',
           payload: null,
         })
       })
@@ -896,9 +896,9 @@ export default function TeacherPage() {
       fetchAbortRef.current?.abort()
       fetchAbortRef.current = controller
 
-      setFetchState({
-        status: 'loading',
-        message: `Loading submissions for ${normalizedRoomCode}...`,
+        setFetchState({
+          status: 'loading',
+          message: `Loading submissions for ${normalizedRoomCode}...`,
       })
 
       try {
@@ -916,8 +916,8 @@ export default function TeacherPage() {
           setFetchState({
             status: localSubmissions.length ? 'success' : 'not_configured',
             message: localSubmissions.length
-              ? `Backend not configured. Showing ${localSubmissions.length} local browser submission${localSubmissions.length === 1 ? '' : 's'} for ${normalizedRoomCode}.`
-              : `${nextHealthState.message} No local browser submissions found yet.`,
+              ? `Showing ${localSubmissions.length} local browser submission${localSubmissions.length === 1 ? '' : 's'} for ${normalizedRoomCode}.`
+              : `No local submissions found yet. Submit once from the test room in this browser, then load again.`,
           })
           startTransition(() => {
             setSubmissions(localSubmissions)
@@ -974,8 +974,8 @@ export default function TeacherPage() {
           setFetchState({
             status: localSubmissions.length ? 'success' : 'not_configured',
             message: localSubmissions.length
-              ? `Backend not configured. Showing ${localSubmissions.length} local browser submission${localSubmissions.length === 1 ? '' : 's'} for ${normalizedRoomCode}.`
-              : `${message || DEFAULT_NOT_CONFIGURED_MESSAGE} No local browser submissions found yet.`,
+              ? `Showing ${localSubmissions.length} local browser submission${localSubmissions.length === 1 ? '' : 's'} for ${normalizedRoomCode}.`
+              : `No local submissions found yet. Submit once from the test room in this browser, then load again.`,
           })
           startTransition(() => {
             setSubmissions(localSubmissions)
@@ -1129,22 +1129,22 @@ export default function TeacherPage() {
                     lineHeight: 1.72,
                   }}
                 >
-                  Load synced submissions for a room, inspect per-question grading, and export the full teacher view as JSON.
-                  This page only trusts the backend after an explicit health check.
+                  Load room submissions, inspect per-question grading, and export the full teacher view as JSON.
+                  Local collection mode keeps the demo running even before cloud sync is connected.
                 </p>
               </div>
 
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
                 <div style={makeBadgeStyle(healthTone)}>
                   {healthState.status === 'checking'
-                    ? 'Checking backend'
+                    ? 'Checking collection'
                     : healthState.status === 'ok'
-                      ? 'Backend ready'
+                      ? 'Cloud sync ready'
                       : healthState.status === 'not_configured'
-                        ? 'Backend not configured'
+                        ? 'Local collection mode'
                         : healthState.status === 'error'
-                          ? 'Backend error'
-                          : 'Backend unknown'}
+                          ? 'Collection status'
+                          : 'Collection mode'}
                 </div>
                 {lastLoadedAt ? <div style={makeBadgeStyle('idle')}>Updated {formatDateTime(lastLoadedAt)}</div> : null}
               </div>
@@ -1252,13 +1252,13 @@ export default function TeacherPage() {
 
           <StateBanner
             tone={healthState.status === 'ok' ? 'success' : healthState.status === 'not_configured' ? 'warning' : healthState.status === 'error' ? 'danger' : 'idle'}
-            title="Backend health"
+            title="Collection mode"
             message={healthState.message}
           />
 
           <StateBanner
             tone={fetchTone === 'accent' ? 'idle' : fetchTone}
-            title="Teacher fetch state"
+            title="Submissions"
             message={fetchState.message}
           />
 
@@ -1357,7 +1357,7 @@ export default function TeacherPage() {
                       lineHeight: 1.7,
                     }}
                   >
-                    No synced submissions yet. If students are working offline, the backend will stay empty until their queues flush.
+                    No submissions loaded yet. Ask a student to submit from this browser, then load the room again.
                   </div>
                 )}
               </div>
@@ -1513,7 +1513,7 @@ export default function TeacherPage() {
                       <StateBanner
                         tone="warning"
                         title="No question detail"
-                        message="The backend row loaded, but it did not include per-question answers or grading results yet."
+                        message="This submission loaded, but it did not include per-question answers or grading results yet."
                       />
                     )}
                   </section>

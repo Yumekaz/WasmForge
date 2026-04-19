@@ -9,14 +9,29 @@ export default async function handler(req, res) {
 
   const config = getTestBackendConfig();
   const env = getBackendConfigState(config);
+
+  if (!config.configured) {
+    return sendJson(res, 200, {
+      ok: true,
+      status: "local_collection_mode",
+      configured: false,
+      collectionMode: "local",
+      message: "Local collection mode active.",
+      env,
+      database: {
+        ready: false,
+        error: null,
+        checkedAt: null,
+      },
+    });
+  }
+
   const database = await checkTestDatabaseReadiness(config);
-  const ok = config.configured && database.ready;
+  const ok = database.ready;
 
   return sendJson(res, ok ? 200 : 503, {
     ok,
-    status: ok
-      ? "ready"
-      : (!config.configured ? "backend_not_configured" : "database_unavailable"),
+    status: ok ? "ready" : "database_unavailable",
     env,
     database,
   });

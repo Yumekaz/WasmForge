@@ -128,7 +128,7 @@ function formatByteLabel(value) {
 function describeBackendHealth(health) {
   if (!health) {
     return {
-      label: "Checking backend",
+      label: "Checking collection",
       tone: "warning",
     };
   }
@@ -136,27 +136,27 @@ function describeBackendHealth(health) {
   switch (health.status) {
     case "ready":
       return {
-        label: "Backend ready",
+        label: "Cloud sync ready",
         tone: "success",
       };
     case "offline":
       return {
-        label: "Offline",
+        label: "Offline mode",
         tone: "warning",
       };
     case "not_configured":
       return {
-        label: "Backend not configured",
-        tone: "danger",
+        label: "Local collection mode",
+        tone: "success",
       };
     case "degraded":
       return {
-        label: "Database unavailable",
+        label: "Cloud sync delayed",
         tone: "warning",
       };
     default:
       return {
-        label: "Backend unavailable",
+        label: "Local collection mode",
         tone: "warning",
       };
   }
@@ -584,11 +584,11 @@ export default function TestRoomPage({
       }
 
       if (result.health.status === "not_configured") {
-        setSyncMessage("Queued locally. Backend not configured.");
+        setSyncMessage("Saved locally. Teacher can load this browser's submissions.");
       } else if (result.health.status === "offline") {
-        setSyncMessage("Queued locally. Waiting for network.");
+        setSyncMessage("Saved locally. Waiting for network.");
       } else if (result.lastError) {
-        setSyncMessage(`Queued locally. ${result.lastError}`);
+        setSyncMessage("Saved locally. Cloud sync is paused.");
       }
 
       return result;
@@ -666,7 +666,7 @@ export default function TestRoomPage({
       const health = await fetchTestHealth();
       setBackendHealth(health);
       if (health.status === "not_configured") {
-        setSyncMessage("Backend not configured. Submissions will stay local until env vars are set.");
+        setSyncMessage("Local collection mode active. Submissions save in this browser for the teacher view.");
       } else if (health.status === "offline") {
         setSyncMessage("Offline mode active. Submissions will queue locally.");
       }
@@ -947,7 +947,7 @@ export default function TestRoomPage({
                 </h1>
                 <p style={{ margin: "18px 0 0", color: "var(--ide-shell-text-soft)", fontSize: "17px", lineHeight: 1.7, maxWidth: "600px" }}>
                   Join the seeded room <strong>{TEST_ROOM_CODE}</strong>, solve three Python questions locally,
-                  run visible samples in Pyodide, and submit to a local queue that syncs when the backend is ready.
+                  run visible samples in Pyodide, and submit to a local collection that can sync when cloud collection is connected.
                 </p>
                 <div
                   style={{
@@ -1095,7 +1095,7 @@ export default function TestRoomPage({
               </StatusPill>
               <StatusPill tone={backendBadge.tone}>{backendBadge.label}</StatusPill>
               {isSubmitted ? (
-                <StatusPill tone="success">{queueCounts.queued > 0 ? "Submitted, waiting sync" : "Submitted"}</StatusPill>
+                <StatusPill tone="success">{queueCounts.queued > 0 ? "Submitted locally" : "Submitted"}</StatusPill>
               ) : null}
               <InlineButton onClick={onNavigateTeacher}>Teacher</InlineButton>
               <InlineButton onClick={onNavigateIde}>IDE</InlineButton>
@@ -1292,7 +1292,7 @@ export default function TestRoomPage({
                 }}
               >
                 <div style={{ color: "var(--ide-shell-muted-strong)", fontSize: "11px", fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase" }}>
-                  Sync status
+                  Collection status
                 </div>
                 <div data-testid="queue-status" style={{ marginTop: "8px", fontSize: "14px", lineHeight: 1.7, color: "var(--ide-shell-text-soft)" }}>
                   {syncMessage || "No pending sync activity."}
