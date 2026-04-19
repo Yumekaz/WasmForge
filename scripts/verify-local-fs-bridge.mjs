@@ -13,6 +13,7 @@ const verificationWorkspace = "playwright-local-fs";
 const returnWorkspace = "playwright-local-fs-return";
 const failedInitialLinkWorkspace = `playwright-failed-initial-link-${Date.now()}`;
 const grantedFolderName = "playwright-granted-local-folder";
+const alternateFolderName = "playwright-alternate-local-folder";
 const unreadableFolderName = "playwright-unreadable-local-folder";
 const inputValue = `bridge-input-${Date.now()}`;
 const seedFilename = "bridge_seed.py";
@@ -26,6 +27,7 @@ const divergedDiskSeedSource = 'print("disk changed outside WasmForge during det
 const browserReturnFilename = "browser-return-only.py";
 const browserReturnSource = 'print("browser workspace restored")\n';
 const failedInitialLinkFilename = "failed-initial-link-browser.py";
+const alternateSeedFilename = "alternate_seed.py";
 const unreadableSeedFilename = "read-fails.py";
 
 async function ensureArtifactsDir() {
@@ -227,6 +229,7 @@ async function installDirectoryPickerMock(page) {
   await page.addInitScript(
     async ({
       folderName,
+      alternateFolderName: grantedAlternateFolderName,
       unreadableFolderName: grantedUnreadableFolderName,
       seedText,
       seedFilename: grantedSeedFilename,
@@ -234,6 +237,7 @@ async function installDirectoryPickerMock(page) {
       nestedSeedFilename: grantedNestedSeedFilename,
       nestedSeedSource: grantedNestedSeedSource,
       unreadableSeedFilename: grantedUnreadableSeedFilename,
+      alternateSeedFilename: grantedAlternateSeedFilename,
     }) => {
       const writeTextFile = async (directory, selectedPath, text) => {
         const parts = selectedPath.split("/").filter(Boolean);
@@ -261,6 +265,19 @@ async function installDirectoryPickerMock(page) {
         await writeTextFile(directory, ".vscode/settings.json", '{"editor.tabSize": 2}\n');
         await directory.getDirectoryHandle("empty-folder", { create: true });
         await writeTextFile(directory, "important.zip", "not really a zip in this mock");
+
+        return directory;
+      };
+
+      const createAlternateDirectory = async () => {
+        const root = await navigator.storage.getDirectory();
+        const directory = await root.getDirectoryHandle(grantedAlternateFolderName, { create: true });
+
+        for await (const [name, handle] of directory.entries()) {
+          await directory.removeEntry(name, { recursive: handle.kind === "directory" }).catch(() => undefined);
+        }
+
+        await writeTextFile(directory, grantedAlternateSeedFilename, 'print("alternate folder")\n');
 
         return directory;
       };
@@ -307,12 +324,16 @@ async function installDirectoryPickerMock(page) {
         if (directoryPickerMockMode === "unreadable") {
           return createUnreadableDirectory();
         }
+        if (directoryPickerMockMode === "alternate") {
+          return createAlternateDirectory();
+        }
 
         return createGrantedDirectory();
       };
     },
     {
       folderName: grantedFolderName,
+      alternateFolderName,
       unreadableFolderName,
       seedText: inputValue,
       seedFilename,
@@ -320,6 +341,7 @@ async function installDirectoryPickerMock(page) {
       nestedSeedFilename,
       nestedSeedSource,
       unreadableSeedFilename,
+      alternateSeedFilename,
     },
   );
 }
@@ -713,6 +735,24 @@ print("fs-after-unlink", is_connected())
 
 }
 
+async function verifyDifferentFolderLinkAfterUnlink(page) {
+  await openAirlockPanel(page);
+  await setDirectoryPickerMockMode(page, "alternate");
+  try {
+    await page.getByRole("button", { name: "Link Folder" }).click();
+    await approveLocalFolderSecurityPrompt(page);
+    await page.getByText(`Airlock sync on: ${alternateFolderName}`, { exact: false }).first().waitFor({ timeout: 20000 });
+    await waitForFileRow(page, alternateSeedFilename);
+
+    const bodyText = await page.locator("body").innerText();
+    if (bodyText.includes("Airlock workspace expects")) {
+      throw new Error("Expected a different folder to link after unlink, but the previous folder guard blocked it.");
+    }
+  } finally {
+    await setDirectoryPickerMockMode(page, "granted");
+  }
+}
+
 async function verifyReturnToBrowserWorkspace(page) {
   await ensureWorkspace(page, returnWorkspace);
   await createFile(page, browserReturnFilename);
@@ -783,6 +823,7 @@ async function main() {
     await verifyTypeScriptBridge(page);
     await verifyDetachAndReattach(page);
     await verifyUnlink(page);
+    await verifyDifferentFolderLinkAfterUnlink(page);
 
     await page.screenshot({
       path: path.join(artifactsDir, "verify-local-fs-bridge.png"),
@@ -803,6 +844,7 @@ async function main() {
       typescriptBridge: "ok",
       detachReattach: "ok",
       unlink: "ok",
+      differentFolderAfterUnlink: "ok",
       returnToWebIDE: "ok",
       consoleErrors,
     }, null, 2));

@@ -2292,6 +2292,7 @@ export default function App({ onNavigateHome }) {
       source = getSyncedLocalFolderHandle() ? "disk" : "local",
       linkedFolderName = localFolderBridgeRef.current.name,
       entriesMap = null,
+      replaceExisting = false,
     } = options;
     const files = entriesMap
       || (getSyncedLocalFolderHandle()
@@ -2307,7 +2308,7 @@ export default function App({ onNavigateHome }) {
 
     setAirlockSnapshots((previous) => [
       snapshot,
-      ...previous.filter((entry) => entry.id !== snapshot.id),
+      ...(replaceExisting ? [] : previous.filter((entry) => entry.id !== snapshot.id)),
     ].slice(0, AIRLOCK_MAX_SNAPSHOTS));
 
     return snapshot;
@@ -3754,12 +3755,17 @@ export default function App({ onNavigateHome }) {
       const folderName = handle.name || "selected folder";
       const previousBridge = localFolderBridgeRef.current;
       const hasBaseline = Boolean(previousBridge.lastSyncedSnapshot);
+      const expectedFolderName =
+        previousBridge.lastSyncedSnapshot?.linkedFolderName
+        || previousBridge.name
+        || "";
+      const startsFreshAfterUnlink =
+        hasBaseline
+        && !previousBridge.handle
+        && expectedFolderName
+        && folderName !== expectedFolderName;
 
-      if (hasBaseline) {
-        const expectedFolderName =
-          previousBridge.lastSyncedSnapshot?.linkedFolderName
-          || previousBridge.name
-          || "";
+      if (hasBaseline && !startsFreshAfterUnlink) {
         if (expectedFolderName && folderName !== expectedFolderName) {
           throw new Error(`Selected "${folderName}", but this Airlock workspace expects "${expectedFolderName}". Choose the original folder or Return to WebIDE before linking a different folder.`);
         }
@@ -3785,12 +3791,17 @@ export default function App({ onNavigateHome }) {
 
       const currentLocalEntries = await captureBrowserWorkspaceEntries();
       const currentDiskEntries = await readLocalFolderTextEntries(handle);
+      if (startsFreshAfterUnlink && Object.keys(currentLocalEntries).length === 0) {
+        setAirlockSnapshots([]);
+      }
+
       if (Object.keys(currentLocalEntries).length > 0) {
         await saveAirlockSnapshot(`Before Link · ${folderName}`, {
           reason: "before-link",
           source: "local",
           linkedFolderName: folderName,
           entriesMap: currentLocalEntries,
+          replaceExisting: startsFreshAfterUnlink,
         });
       }
 
@@ -3820,6 +3831,11 @@ export default function App({ onNavigateHome }) {
       setFileSearchQuery("");
       openAirlockPanel();
       await refreshLocalFolderFiles(handle, activeFileRef.current);
+      if (startsFreshAfterUnlink) {
+        terminalRef.current?.writeln(
+          `\x1b[36m[Airlock] Started a new Airlock link for "${folderName}". Previous "${expectedFolderName}" Airlock history was cleared.\x1b[0m`,
+        );
+      }
       terminalRef.current?.writeln(
         `\x1b[36m[Airlock] Linked "${folderName}". Sync is on, so WasmForge and VS Code now point at the same folder.\x1b[0m`,
       );
