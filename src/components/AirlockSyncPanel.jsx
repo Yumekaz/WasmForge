@@ -12,6 +12,35 @@ function formatTimestamp(value) {
   }
 }
 
+function getSnapshotFileNames(snapshot) {
+  return Object.keys(snapshot?.files || {}).sort((left, right) => left.localeCompare(right));
+}
+
+function getSnapshotFileCount(snapshot) {
+  return snapshot?.fileCount ?? getSnapshotFileNames(snapshot).length;
+}
+
+function summarizeFileNames(fileNames, limit = 6) {
+  if (fileNames.length === 0) {
+    return "No files captured";
+  }
+
+  const visibleNames = fileNames.slice(0, limit).join(", ");
+  const hiddenCount = fileNames.length - limit;
+  return hiddenCount > 0 ? `${visibleNames}, +${hiddenCount} more` : visibleNames;
+}
+
+function snapshotsHaveSameFileSet(leftSnapshot, rightSnapshot) {
+  const leftNames = getSnapshotFileNames(leftSnapshot);
+  const rightNames = getSnapshotFileNames(rightSnapshot);
+
+  if (leftNames.length === 0 || leftNames.length !== rightNames.length) {
+    return false;
+  }
+
+  return leftNames.every((name, index) => name === rightNames[index]);
+}
+
 function statusTone(status) {
   switch (status) {
     case "conflict":
@@ -181,6 +210,23 @@ export default function AirlockSyncPanel({
   const hasReconciliation = Array.isArray(reconciliation?.entries) && reconciliation.entries.length > 0;
   const unresolvedCount = reconciliation?.unresolvedCount || 0;
   const conflictCount = reconciliation?.summary?.conflict || 0;
+  const returnSnapshot = useMemo(
+    () => snapshots.find((snapshot) => (
+      snapshot?.reason === "before-link"
+      && snapshot?.source === "local"
+      && getSnapshotFileCount(snapshot) > 0
+    )) || null,
+    [snapshots],
+  );
+  const returnFileNames = useMemo(() => getSnapshotFileNames(returnSnapshot), [returnSnapshot]);
+  const returnLooksLikeLinkedFolder = Boolean(
+    returnSnapshot
+    && lastSyncedSnapshot
+    && (
+      returnSnapshot.contentHash === lastSyncedSnapshot.contentHash
+      || snapshotsHaveSameFileSet(returnSnapshot, lastSyncedSnapshot)
+    ),
+  );
 
   return (
     <div
@@ -243,6 +289,40 @@ export default function AirlockSyncPanel({
               </button>
             </div>
           </div>
+
+          {(linked || lastSyncedSnapshot || snapshots.length > 0 || reconciliation) ? (
+            <div
+              style={{
+                border: `1px solid ${returnLooksLikeLinkedFolder ? "color-mix(in srgb, var(--ide-shell-warning) 42%, transparent)" : "var(--ide-shell-border)"}`,
+                borderRadius: "6px",
+                background: returnLooksLikeLinkedFolder
+                  ? "color-mix(in srgb, var(--ide-shell-warning) 10%, var(--ide-shell-panel))"
+                  : "var(--ide-shell-elevated)",
+                padding: "12px",
+                display: "grid",
+                gap: "7px",
+              }}
+            >
+              <div style={{ color: "var(--ide-shell-muted)", fontSize: "10px", fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+                Return Preview
+              </div>
+              <div style={{ color: "var(--ide-shell-text)", fontSize: "13px", fontWeight: 800 }}>
+                {returnSnapshot
+                  ? `Will restore "${returnSnapshot.label}" (${getSnapshotFileCount(returnSnapshot)} files)`
+                  : "No pre-link browser snapshot found"}
+              </div>
+              <div style={{ color: "var(--ide-shell-muted)", fontSize: "12px", lineHeight: 1.55 }}>
+                {returnSnapshot
+                  ? `Captured ${formatTimestamp(returnSnapshot.createdAt)}. Files: ${summarizeFileNames(returnFileNames)}.`
+                  : "Returning will keep the current shadow files because WasmForge cannot find the browser workspace captured before this folder was linked."}
+              </div>
+              {returnLooksLikeLinkedFolder ? (
+                <div style={{ color: "var(--ide-shell-warning)", fontSize: "12px", fontWeight: 700, lineHeight: 1.55 }}>
+                  Warning: this restore snapshot has the same file set as the linked folder baseline. If these look like folder files, the browser workspace was already overwritten before this fix.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div style={{ display: "grid", gap: "10px", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
             <div style={{ ...surfaceStyle(), padding: "12px", background: "var(--ide-shell-elevated)" }}>
