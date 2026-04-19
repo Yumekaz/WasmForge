@@ -1386,6 +1386,170 @@ await eval_code_async(
   }
 }
 
+async function runMockTests({
+  questionId = '',
+  code = '',
+  filename = 'answer.py',
+  tests = [],
+} = {}) {
+  if (initializationPromise) {
+    await initializationPromise
+  }
+
+  if (!pyodide) {
+    self.postMessage({
+      type: 'mock_tests_done',
+      questionId,
+      filename,
+      error: 'Runtime not ready',
+      tests: [],
+      durationMs: null,
+    })
+    return
+  }
+
+  stopHeartbeat()
+  stopFlushInterval()
+  activeExecutionMode = 'script'
+  resetNotebookBuffers()
+  sendHeartbeat()
+  startHeartbeat()
+
+  const startedAt = performance.now()
+  const results = []
+  let error = null
+
+  try {
+    await mountWorkspace()
+    await syncWorkspaceFromOpfs()
+    await mountLocalFolder()
+
+    const executionRoot = getPythonExecutionRoot()
+    const executionPath = getPythonExecutionPath(filename, executionRoot)
+    ensureVirtualParentDirectory(executionPath)
+    pyodide.FS.writeFile(executionPath, code, { encoding: 'utf8' })
+
+    await ensureLocalPackages(code, filename)
+    configurePythonExecutionRoot(executionRoot)
+
+    for (const testCase of Array.isArray(tests) ? tests : []) {
+      await resetWorkspaceImportState()
+      await resetStructuredOutputs()
+
+      const caseStartedAt = performance.now()
+      pyodide.globals.set('_wasmforge_mock_source', String(code ?? ''))
+      pyodide.globals.set('_wasmforge_mock_stdin', String(testCase?.stdin ?? ''))
+      pyodide.globals.set('_wasmforge_mock_filename', executionPath)
+
+      const rawResult = await pyodide.runPythonAsync(`
+import builtins
+import io
+import json
+import sys
+import traceback
+from pyodide.code import eval_code_async
+
+_source = str(_wasmforge_mock_source)
+_stdin_text = str(_wasmforge_mock_stdin)
+_filename = str(_wasmforge_mock_filename)
+_stdout = io.StringIO()
+_stderr = io.StringIO()
+_stdin = io.StringIO(_stdin_text)
+_old_stdin = sys.stdin
+_old_stdout = sys.stdout
+_old_stderr = sys.stderr
+_old_input = builtins.input
+
+def _mock_input(prompt=""):
+    prompt = str(prompt or "")
+    if prompt:
+        print(prompt, end="")
+    line = sys.stdin.readline()
+    if line == "":
+        raise EOFError("EOF when reading a line")
+    return line[:-1] if line.endswith("\\n") else line
+
+_error = ""
+try:
+    sys.stdin = _stdin
+    sys.stdout = _stdout
+    sys.stderr = _stderr
+    builtins.input = _mock_input
+    _namespace = {
+        "__name__": "__main__",
+        "__package__": None,
+        "__file__": _filename,
+        "__builtins__": builtins.__dict__,
+    }
+    await eval_code_async(
+        _source,
+        globals=_namespace,
+        locals=_namespace,
+        filename=_filename,
+    )
+except BaseException:
+    _error = traceback.format_exc()
+finally:
+    builtins.input = _old_input
+    sys.stdin = _old_stdin
+    sys.stdout = _old_stdout
+    sys.stderr = _old_stderr
+
+json.dumps({
+    "stdout": _stdout.getvalue(),
+    "stderr": _stderr.getvalue(),
+    "error": _error,
+})
+      `)
+      const parsedResult = JSON.parse(rawResult)
+      const actualStdout = String(parsedResult.stdout ?? '')
+      const expectedStdout = String(testCase?.expectedStdout ?? '')
+      const runtimeError = normalizeErrorMessage(parsedResult.error || '').trim()
+      const passed = !runtimeError && actualStdout.trimEnd() === expectedStdout.trimEnd()
+
+      results.push({
+        id: String(testCase?.id || `case-${results.length + 1}`),
+        name: String(testCase?.name || `Case ${results.length + 1}`),
+        stdin: String(testCase?.stdin ?? ''),
+        expectedStdout,
+        stdout: actualStdout,
+        stderr: String(parsedResult.stderr ?? ''),
+        error: runtimeError,
+        points: Number(testCase?.points || 0),
+        hidden: Boolean(testCase?.hidden),
+        passed,
+        durationMs: performance.now() - caseStartedAt,
+      })
+    }
+  } catch (err) {
+    error = normalizeErrorMessage(err).trim() || 'Mock test execution failed'
+  } finally {
+    try {
+      await persistWorkspaceToOpfs()
+    } catch (syncErr) {
+      error ||= `[WasmForge] Failed to sync workspace: ${syncErr.message || syncErr}`
+    }
+
+    try {
+      await persistLocalFolderToDisk()
+    } catch (syncErr) {
+      error ||= `[WasmForge] Failed to sync local folder: ${syncErr.message || syncErr}`
+    }
+
+    stopHeartbeat()
+    stopFlushInterval()
+    activeExecutionMode = 'script'
+    self.postMessage({
+      type: 'mock_tests_done',
+      questionId,
+      filename,
+      error,
+      tests: results,
+      durationMs: performance.now() - startedAt,
+    })
+  }
+}
+
 async function runNotebookCell({
   notebookKey,
   code,
@@ -1524,6 +1688,8 @@ self.onmessage = async (event) => {
     type,
     code,
     filename,
+    questionId,
+    tests,
     notebookKey,
     cellId,
     stdinBuffer: incomingStdinBuffer,
@@ -1558,6 +1724,16 @@ self.onmessage = async (event) => {
         code,
         filename,
         cellId,
+      })
+      break
+
+    case 'run_mock_tests':
+      await setLocalFolderHandle(incomingLocalFolderHandle)
+      await runMockTests({
+        questionId,
+        code,
+        filename,
+        tests,
       })
       break
 

@@ -39,6 +39,7 @@ export function usePyodideWorker({
   const stdinBytesViewRef = useRef(null)
   const pendingNotebookRunRef = useRef(null)
   const pendingNotebookResetRef = useRef(null)
+  const pendingMockTestsRef = useRef(null)
   const localFolderHandleRef = useRef(localFolderHandle)
   const onStdoutRef = useRef(onStdout)
   const onStderrRef = useRef(onStderr)
@@ -88,6 +89,29 @@ export function usePyodideWorker({
     })
     resolvePendingNotebookReset({ error: errorMessage })
   }, [resolvePendingNotebookReset, resolvePendingNotebookRun])
+
+  const resolvePendingMockTests = useCallback((result = {}) => {
+    if (!pendingMockTestsRef.current) {
+      return
+    }
+
+    pendingMockTestsRef.current.resolve({
+      questionId: result.questionId || pendingMockTestsRef.current.questionId,
+      filename: result.filename || pendingMockTestsRef.current.filename,
+      error: result.error || '',
+      tests: Array.isArray(result.tests) ? result.tests : [],
+      durationMs: result.durationMs ?? null,
+    })
+    pendingMockTestsRef.current = null
+  }, [])
+
+  const settlePendingMockTests = useCallback((errorMessage = '') => {
+    resolvePendingMockTests({
+      error: errorMessage,
+      tests: [],
+      durationMs: null,
+    })
+  }, [resolvePendingMockTests])
 
   useEffect(() => {
     onStdoutRef.current = onStdout
@@ -295,6 +319,20 @@ export function usePyodideWorker({
           resolvePendingNotebookReset({ error })
           break
 
+        case 'mock_tests_done':
+          clearWatchdog()
+          awaitingInputRef.current = false
+          setIsAwaitingInput(false)
+          setIsRunning(false)
+          resolvePendingMockTests({
+            questionId: event.data.questionId,
+            filename: event.data.filename,
+            error,
+            tests: event.data.tests,
+            durationMs,
+          })
+          break
+
         default:
           break
       }
@@ -309,6 +347,7 @@ export function usePyodideWorker({
       setIsReady(false)
       setIsRunning(false)
       settlePendingNotebookActions(`[WasmForge] Worker crashed: ${err.message}`)
+      settlePendingMockTests(`[WasmForge] Worker crashed: ${err.message}`)
       spawnWorkerRef.current?.()
     }
 
@@ -320,7 +359,7 @@ export function usePyodideWorker({
       workspaceName,
       localFolderHandle: localFolderHandleRef.current,
     })
-  }, [clearWatchdog, createStdinChannel, resetWatchdog, resolvePendingNotebookReset, resolvePendingNotebookRun, settlePendingNotebookActions, stdinSupported, workspaceName])
+  }, [clearWatchdog, createStdinChannel, resetWatchdog, resolvePendingMockTests, resolvePendingNotebookReset, resolvePendingNotebookRun, settlePendingMockTests, settlePendingNotebookActions, stdinSupported, workspaceName])
 
   spawnWorkerRef.current = spawnWorker
 
@@ -399,9 +438,10 @@ export function usePyodideWorker({
     setIsReady(false)
     setIsRunning(false)
     settlePendingNotebookActions('Killed by user')
+    settlePendingMockTests('Killed by user')
     onDoneRef.current?.({ error: 'Killed by user' })
     spawnWorkerRef.current?.()
-  }, [clearWatchdog, settlePendingNotebookActions])
+  }, [clearWatchdog, settlePendingMockTests, settlePendingNotebookActions])
 
   const resetNotebookSession = useCallback(({ notebookKey, filename }) => {
     if (!workerRef.current || !isReady) {
@@ -461,6 +501,48 @@ export function usePyodideWorker({
     })
   }, [clearStdinSignal, isReady, isRunning, resetWatchdog])
 
+  const runMockTests = useCallback(({ questionId, filename, code, tests }) => {
+    if (!workerRef.current || !isReady) {
+      onStderrRef.current?.('[WasmForge] Runtime not ready yet. Please wait...\n')
+      return Promise.resolve({
+        questionId,
+        filename,
+        error: 'Runtime not ready',
+        tests: [],
+        durationMs: null,
+      })
+    }
+
+    if (isRunning || pendingMockTestsRef.current) {
+      onStderrRef.current?.('[WasmForge] Already running. Kill the current execution first.\n')
+      return Promise.resolve({
+        questionId,
+        filename,
+        error: 'Already running',
+        tests: [],
+        durationMs: null,
+      })
+    }
+
+    clearStdinSignal()
+    awaitingInputRef.current = false
+    setIsAwaitingInput(false)
+    setIsRunning(true)
+    resetWatchdog()
+
+    return new Promise((resolve) => {
+      pendingMockTestsRef.current = { resolve, questionId, filename }
+      workerRef.current.postMessage({
+        type: 'run_mock_tests',
+        questionId,
+        filename,
+        code,
+        tests,
+        localFolderHandle: localFolderHandleRef.current,
+      })
+    })
+  }, [clearStdinSignal, isReady, isRunning, resetWatchdog])
+
   useEffect(() => {
     spawnWorker()
 
@@ -474,6 +556,7 @@ export function usePyodideWorker({
 
   return {
     runCode,
+    runMockTests,
     runNotebookCell,
     resetNotebookSession,
     submitStdin,
