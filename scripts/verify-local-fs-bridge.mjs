@@ -263,6 +263,9 @@ async function installDirectoryPickerMock(page) {
         await writeTextFile(directory, grantedSeedFilename, grantedSeedSource);
         await writeTextFile(directory, grantedNestedSeedFilename, grantedNestedSeedSource);
         await writeTextFile(directory, ".vscode/settings.json", '{"editor.tabSize": 2}\n');
+        await writeTextFile(directory, "node_modules/left-pad/index.js", 'module.exports = "ignored";\n');
+        await writeTextFile(directory, ".git/config", "[core]\n\trepositoryformatversion = 0\n");
+        await writeTextFile(directory, "dist/bundle.js", "console.log('ignored build output');\n");
         await directory.getDirectoryHandle("empty-folder", { create: true });
         await writeTextFile(directory, "important.zip", "not really a zip in this mock");
 
@@ -462,6 +465,12 @@ async function verifyExplorerBridge(page) {
   await page.getByText("empty-folder", { exact: true }).first().waitFor({ timeout: 20000 });
   await page.getByText("important.zip", { exact: true }).first().waitFor({ timeout: 20000 });
   await page.getByText("nested_demo.py", { exact: true }).first().waitFor({ timeout: 20000 });
+  await expectNoFileRow(page, "node_modules");
+  await expectNoFileRow(page, "node_modules/left-pad/index.js");
+  await expectNoFileRow(page, ".git");
+  await expectNoFileRow(page, ".git/config");
+  await expectNoFileRow(page, "dist");
+  await expectNoFileRow(page, "dist/bundle.js");
 
   await selectFile(page, seedFilename);
   await setEditorValue(page, editedSeedSource);

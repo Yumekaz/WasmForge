@@ -158,6 +158,27 @@ const LOCAL_FOLDER_TEXT_EXTENSIONS = new Set([
   "ps1",
   "properties",
 ]);
+const LOCAL_FOLDER_IGNORED_DIRECTORY_NAMES = new Set([
+  ".cache",
+  ".git",
+  ".gradle",
+  ".mypy_cache",
+  ".next",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".turbo",
+  ".venv",
+  ".vercel",
+  ".vite",
+  "__pycache__",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "venv",
+]);
 const LOCAL_FOLDER_ENTRY_KIND_DIRECTORY = "directory";
 const LOCAL_FOLDER_ENTRY_KIND_FILE = "file";
 const AIRLOCK_SNAPSHOT_STORAGE_KEY_PREFIX = "wasmforge:airlock-snapshots";
@@ -396,6 +417,10 @@ function isLocalFolderTextFileName(name) {
   return LOCAL_FOLDER_TEXT_EXTENSIONS.has(extension);
 }
 
+function shouldIgnoreLocalFolderDirectory(name) {
+  return LOCAL_FOLDER_IGNORED_DIRECTORY_NAMES.has(String(name ?? "").toLowerCase());
+}
+
 function sortLocalFolderEntries(entries) {
   return [...entries].sort((left, right) => {
     const leftDepth = left.name.split("/").length;
@@ -426,6 +451,10 @@ async function listLocalFolderEntries(directoryHandle, basePath = "") {
     const relativePath = basePath ? `${basePath}/${name}` : name;
 
     if (handle.kind === "directory") {
+      if (shouldIgnoreLocalFolderDirectory(name)) {
+        continue;
+      }
+
       entries.push({
         name: relativePath,
         kind: LOCAL_FOLDER_ENTRY_KIND_DIRECTORY,
