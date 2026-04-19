@@ -1920,6 +1920,10 @@ export default function App({ onNavigateHome }) {
       clearRecoveryWrite(filename, workspaceName);
     },
   });
+  const seedDefaultWorkspaceFile = useCallback(async (workspaceName) => {
+    await writeFile(DEFAULT_FILENAME, DEFAULT_PYTHON, "workspace", workspaceName);
+    clearRecoveryWrite(DEFAULT_FILENAME, workspaceName);
+  }, [clearRecoveryWrite, writeFile]);
 
   const {
     sqliteReady,
@@ -2866,7 +2870,9 @@ export default function App({ onNavigateHome }) {
         let nextWorkspaces = [...existingWorkspaces];
         if (nextWorkspaces.length === 0) {
           const created = await createWorkspace(DEFAULT_WORKSPACE_NAME);
-          nextWorkspaces = [created?.name ?? DEFAULT_WORKSPACE_NAME];
+          const createdWorkspaceName = created?.name ?? DEFAULT_WORKSPACE_NAME;
+          await seedDefaultWorkspaceFile(createdWorkspaceName);
+          nextWorkspaces = [createdWorkspaceName];
         }
 
         nextWorkspaces.sort((left, right) => left.localeCompare(right));
@@ -2886,7 +2892,7 @@ export default function App({ onNavigateHome }) {
     return () => {
       cancelled = true;
     };
-  }, [createWorkspace, isIOWorkerReady, listWorkspaces, reportWorkspaceError]);
+  }, [createWorkspace, isIOWorkerReady, listWorkspaces, reportWorkspaceError, seedDefaultWorkspaceFile]);
 
   useEffect(() => {
     if (!isIOWorkerReady || !workspaceBootstrapped) {
@@ -2899,7 +2905,7 @@ export default function App({ onNavigateHome }) {
     recoverPendingWrites(workspaceName)
       .then(() =>
         refreshWorkspaceFiles(DEFAULT_FILENAME, {
-          createDefaultIfEmpty: true,
+          createDefaultIfEmpty: false,
           workspaceName,
         }),
       )
@@ -4336,21 +4342,23 @@ export default function App({ onNavigateHome }) {
 
     await prepareWorkspaceMutation("creating a new workspace");
     const created = await createWorkspace(normalizedName);
-      const nextWorkspaces = await listWorkspaces();
-      nextWorkspaces.sort((left, right) => left.localeCompare(right));
-      setWorkspaces(nextWorkspaces);
-      setIsActiveFileLoading(true);
-      setSqlExecution(createEmptySqlExecution());
-      setPythonExecution(createEmptyPythonExecution());
+    const createdWorkspaceName = created?.name ?? normalizedName;
+    await seedDefaultWorkspaceFile(createdWorkspaceName);
+    const nextWorkspaces = await listWorkspaces();
+    nextWorkspaces.sort((left, right) => left.localeCompare(right));
+    setWorkspaces(nextWorkspaces);
+    setIsActiveFileLoading(true);
+    setSqlExecution(createEmptySqlExecution());
+    setPythonExecution(createEmptyPythonExecution());
     setOfflineProofVisible(false);
     setOpenFiles([]);
     setFiles([]);
     setActiveFile("");
-    setActiveWorkspace(created?.name ?? normalizedName);
+    setActiveWorkspace(createdWorkspaceName);
     setBottomPanelMode("terminal");
     setMobilePane("files");
-    return created?.name ?? normalizedName;
-  }, [createWorkspace, listWorkspaces, prepareWorkspaceMutation, workspaces]);
+    return createdWorkspaceName;
+  }, [createWorkspace, listWorkspaces, prepareWorkspaceMutation, seedDefaultWorkspaceFile, workspaces]);
 
   const handleFileSelect = useCallback(async (name) => {
     const selectedFile = files.find((file) => file.name === name);

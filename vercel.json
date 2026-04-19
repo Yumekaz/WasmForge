@@ -3,6 +3,26 @@
     {
       "source": "/ide",
       "destination": "/"
+    },
+    {
+      "source": "/ide/:path*",
+      "destination": "/"
+    },
+    {
+      "source": "/test",
+      "destination": "/"
+    },
+    {
+      "source": "/test/:path*",
+      "destination": "/"
+    },
+    {
+      "source": "/teacher",
+      "destination": "/"
+    },
+    {
+      "source": "/teacher/:path*",
+      "destination": "/"
     }
   ],
   "headers": [

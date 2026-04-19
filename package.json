@@ -15,6 +15,7 @@
     "verify:parallel": "node scripts/verify-parallel-workers.mjs",
     "verify:local-fs": "node scripts/verify-local-fs-bridge.mjs",
     "verify:claims": "node scripts/verify-claims.mjs",
+    "verify:test-room": "node scripts/verify-test-room.mjs",
     "verify:all": "npm run verify:ide && npm run verify:parallel && npm run verify:local-fs && npm run verify:notebook && npm run verify:share && npm run verify:mobile && npm run verify:claims"
   },
   "dependencies": {

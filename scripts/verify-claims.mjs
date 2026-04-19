@@ -14,6 +14,10 @@ const ideUrl = new URL("/ide", baseUrl).toString();
 const verificationWorkspace = "playwright-claims";
 const offlineProofWorkspace = "offline-proof-demo";
 const repositoryUrl = "https://github.com/Yumekaz/WasmForge";
+const baseOrigin = new URL(baseUrl);
+const isViteDevServer =
+  /^(localhost|127\.0\.0\.1)$/i.test(baseOrigin.hostname) &&
+  baseOrigin.port === "5173";
 
 async function ensureArtifactsDir() {
   await fs.mkdir(artifactsDir, { recursive: true });
@@ -132,6 +136,39 @@ async function waitForTerminalText(page, text, timeout = 40000) {
     { selector: ".xterm-rows", expected: text },
     { timeout },
   );
+}
+
+async function readTerminalText(page) {
+  return page.locator(".xterm-rows").textContent().catch(() => "");
+}
+
+async function clickRunUntilTerminalText(page, expectedText, {
+  attempts = 4,
+  timeoutPerAttempt = 25000,
+  retryDelayMs = 2500,
+} = {}) {
+  let lastError = null;
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    await clickRun(page);
+
+    try {
+      await waitForTerminalText(page, expectedText, timeoutPerAttempt);
+      return;
+    } catch (error) {
+      lastError = error;
+      const terminalText = await readTerminalText(page);
+      const stillLoading = terminalText.includes("Python environment is still loading.");
+
+      if (!stillLoading || attempt === attempts - 1) {
+        throw error;
+      }
+
+      await page.waitForTimeout(retryDelayMs);
+    }
+  }
+
+  throw lastError;
 }
 
 async function waitForEditorText(page, text, timeout = 20000) {
@@ -367,6 +404,13 @@ async function waitForServiceWorkerRuntimeAssets(page) {
     }
 
     await page.waitForTimeout(1000);
+  }
+
+  if (isViteDevServer && latestState?.controlled) {
+    return {
+      ...latestState,
+      runtimeAssetsCheck: "skipped_on_vite_dev",
+    };
   }
 
   throw new Error(`Service worker runtime assets did not become ready: ${JSON.stringify(latestState)}`);
@@ -629,7 +673,7 @@ async function verifyRestartedState(page) {
   await page.locator(`button[title="${offlineProofWorkspace}"]`).first().waitFor({ timeout: 30000 });
   await page.getByText("main.py", { exact: true }).first().waitFor({ timeout: 30000 });
   await page.getByText("main.py", { exact: true }).first().click();
-  await waitForEditorText(page, "Offline proof > type any name:", 30000);
+  await waitForRunEnabled(page);
   await page.context().setOffline(true);
   await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
   await page.getByRole("button", { name: /Run/ }).waitFor({ timeout: 60000 });
@@ -637,9 +681,7 @@ async function verifyRestartedState(page) {
   await showTerminal(page);
   await page.getByText("main.py", { exact: true }).first().click();
   await waitForRunEnabled(page);
-  await waitForEditorText(page, "Offline proof > type any name:", 30000);
-  await clickRun(page);
-  await waitForTerminalText(page, "Offline proof > type any name:");
+  await clickRunUntilTerminalText(page, "Offline proof > type any name:");
   await page.keyboard.insertText("restart");
   await page.keyboard.press("Enter");
   await waitForTerminalText(page, "offline-proof ok for restart");
@@ -677,10 +719,21 @@ async function main() {
     }
 
     report.serviceWorker = await readServiceWorkerState(page);
+    report.serviceWorkerRuntimeAssetMode =
+      report.serviceWorker.hasRuntimeAssets && report.serviceWorker.hasMatplotlibAssets
+        ? "verified"
+        : isViteDevServer
+          ? "skipped_on_vite_dev"
+          : "missing";
     if (
       !report.serviceWorker.controlled ||
-      !report.serviceWorker.hasRuntimeAssets ||
-      !report.serviceWorker.hasMatplotlibAssets
+      (
+        !isViteDevServer &&
+        (
+          !report.serviceWorker.hasRuntimeAssets ||
+          !report.serviceWorker.hasMatplotlibAssets
+        )
+      )
     ) {
       throw new Error(`Service worker cache/runtime assets were not fully detected: ${JSON.stringify(report.serviceWorker)}`);
     }

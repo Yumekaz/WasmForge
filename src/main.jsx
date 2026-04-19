@@ -4,12 +4,23 @@ import { registerSW } from 'virtual:pwa-register'
 import './brandFonts.css'
 import App from './App.jsx'
 import LandingPage from './components/LandingPage.jsx'
+import TeacherPage from './pages/TeacherPage.jsx'
+import TestRoomPage from './pages/TestRoomPage.jsx'
 
 registerSW({ immediate: true })
 
 function normalizePath(pathname) {
   const normalizedPath = pathname.replace(/\/+$/u, '') || '/'
-  return normalizedPath === '/ide' ? '/ide' : '/'
+  if (normalizedPath === '/ide' || normalizedPath.startsWith('/ide/')) {
+    return '/ide'
+  }
+  if (normalizedPath === '/test' || normalizedPath.startsWith('/test/')) {
+    return '/test'
+  }
+  if (normalizedPath === '/teacher' || normalizedPath.startsWith('/teacher/')) {
+    return '/teacher'
+  }
+  return '/'
 }
 
 function Root() {
@@ -36,6 +47,26 @@ function Root() {
 
   if (pathname === '/ide') {
     return <App onNavigateHome={() => navigate('/')} />
+  }
+
+  if (pathname === '/test') {
+    return (
+      <TestRoomPage
+        onNavigateHome={() => navigate('/')}
+        onNavigateIde={() => navigate('/ide')}
+        onNavigateTeacher={() => navigate('/teacher')}
+      />
+    )
+  }
+
+  if (pathname === '/teacher') {
+    return (
+      <TeacherPage
+        onNavigateHome={() => navigate('/')}
+        onNavigateIde={() => navigate('/ide')}
+        onNavigateTest={() => navigate('/test')}
+      />
+    )
   }
 
   return <LandingPage onOpenIde={() => navigate('/ide')} />
